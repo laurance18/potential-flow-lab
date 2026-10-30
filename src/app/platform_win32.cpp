@@ -12,7 +12,9 @@
 #include <GLFW/glfw3native.h>
 
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <cwchar>
 #include <format>
 #include <string>
 #include <vector>
@@ -23,6 +25,12 @@ namespace {
 constexpr wchar_t k_sceneFilter[] = L"Flow scenes (*.json)\0*.json\0All files (*.*)\0*.*\0";
 constexpr wchar_t k_pngFilter[] = L"PNG images (*.png)\0*.png\0All files (*.*)\0*.*\0";
 constexpr wchar_t k_csvFilter[] = L"CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0";
+constexpr wchar_t k_mp4Filter[] = L"MP4 videos (*.mp4)\0*.mp4\0All files (*.*)\0*.*\0";
+constexpr wchar_t k_gifFilter[] = L"Animated GIFs (*.gif)\0*.gif\0All files (*.*)\0*.*\0";
+constexpr const char* k_usage =
+    "Usage: PotentialFlowLab.exe [scene.json] [--export-image out.png] [--export-field out.csv] "
+    "[--export-lines out.csv] [--export-surface out.csv] [--export-video out.mp4|out.gif "
+    "[--video-seconds 6] [--video-fps 30]]";
 
 using Microsoft::WRL::ComPtr;
 
@@ -85,27 +93,47 @@ CommandLine parseCommandLine() {
     if (args == nullptr) return result;
     for (int i = 1; i < count && result.error.empty(); ++i) {
         const std::wstring arg = args[i];
+        const std::string name = std::filesystem::path(arg).string();
         std::optional<std::filesystem::path>* target = nullptr;
         if (arg == L"--export-image") target = &result.exportImage;
         if (arg == L"--export-field") target = &result.exportField;
         if (arg == L"--export-lines") target = &result.exportLines;
         if (arg == L"--export-surface") target = &result.exportSurface;
+        if (arg == L"--export-video") target = &result.exportVideo;
+        const bool seconds = arg == L"--video-seconds";
+        const bool fps = arg == L"--video-fps";
 
-        if (target != nullptr) {
-            if (i + 1 < count) {
-                *target = std::filesystem::path(args[++i]);
+        if (target != nullptr || seconds || fps) {
+            if (i + 1 >= count) {
+                result.error = name + (target != nullptr ? " needs a file name." : " needs a number.");
+                continue;
+            }
+            const std::wstring value = args[++i];
+            if (target != nullptr) {
+                *target = std::filesystem::path(value);
+                continue;
+            }
+            wchar_t* end = nullptr;
+            const double number = std::wcstod(value.c_str(), &end);
+            const bool whole = end != nullptr && *end == 0 && !value.empty();
+            if (seconds && whole && number >= 0.1 && number <= 3600.0) {
+                result.videoSeconds = number;
+            } else if (fps && whole && number >= 1.0 && number <= 120.0 && number == std::floor(number)) {
+                result.videoFps = static_cast<int>(number);
             } else {
-                result.error = std::filesystem::path(arg).string() + " needs a file name.";
+                result.error = name + (seconds ? " needs a number of seconds from 0.1 to 3600."
+                                               : " needs a whole number of frames per second from 1 to 120.");
             }
         } else if (arg.starts_with(L"--")) {
-            result.error = "Unknown option " + std::filesystem::path(arg).string() +
-                           ".\n\nUsage: PotentialFlowLab.exe [scene.json] [--export-image out.png] "
-                           "[--export-field out.csv] [--export-lines out.csv] [--export-surface out.csv]";
+            result.error = "Unknown option " + name + ".\n\n" + k_usage;
         } else if (!result.scene) {
             result.scene = std::filesystem::path(arg);
         }
     }
     LocalFree(args);
+    if (result.error.empty() && !result.exportVideo && (result.videoSeconds || result.videoFps)) {
+        result.error = std::string("--video-seconds and --video-fps go with --export-video.\n\n") + k_usage;
+    }
     return result;
 }
 
@@ -121,6 +149,11 @@ std::optional<std::filesystem::path> showSavePngDialog(GLFWwindow* owner, const 
 
 std::optional<std::filesystem::path> showSaveCsvDialog(GLFWwindow* owner, const std::filesystem::path& suggested) {
     return fileDialog(owner, true, suggested, k_csvFilter, L"csv");
+}
+
+std::optional<std::filesystem::path> showSaveVideoDialog(GLFWwindow* owner, const std::filesystem::path& suggested,
+                                                         bool gif) {
+    return fileDialog(owner, true, suggested, gif ? k_gifFilter : k_mp4Filter, gif ? L"gif" : L"mp4");
 }
 
 bool writePng(const std::filesystem::path& path, int width, int height, const std::uint8_t* rgba, std::string& error) {

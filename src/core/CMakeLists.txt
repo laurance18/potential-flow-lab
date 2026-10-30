@@ -7,6 +7,9 @@ add_library(pfl_core STATIC
     scene.hpp scene.cpp
     streamline.hpp streamline.cpp
     surface_pressure.hpp surface_pressure.cpp
+    parameters.hpp parameters.cpp
+    sweep.hpp sweep.cpp
+    verification.hpp verification.cpp
     particles.hpp particles.cpp
     dye.hpp dye.cpp)
 target_include_directories(pfl_core PUBLIC "${PROJECT_SOURCE_DIR}/src")

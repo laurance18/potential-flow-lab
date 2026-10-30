@@ -15,14 +15,27 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   streaks that the flow carries away (streaklines; in steady flow they trace the streamlines and
   the pulse spacing shows the speed). Rakes can be moved, turned and edited, and are saved with
   the scene.
+- **Parameters** panel (View → Parameters, Ctrl+P): a live slider for every element parameter;
+  the flow follows as you drag. A **sweep** steps one parameter through a range: Play animates it,
+  Export CSV writes the stagnation points and each body's lift, drag, c_l, c_d and lowest Cp at
+  every step (with the Kutta–Joukowski lift for comparison).
+- **Record animation** (File menu): the animated plot as an MP4 video (H.264, Windows Media
+  Foundation) or a looping animated GIF, at a chosen length, frame rate and size. The animation
+  advances exactly one video frame per captured frame, so the video plays at the right speed. You
+  can drag elements and move sliders while recording, or play the sweep once over the video.
 - **Elements** menu: every element with its parameters, each with Edit and Delete.
 - **Examples** menu: the scenes in `examples/` (cylinder, lifting cylinder, Rankine bodies, corner
   flow, ...) built into the exe; one click loads the elements, view and plot settings.
 - **File** menu: New, Open, Save, Save As (JSON scenes, see `examples/`), Clear All, and exports:
   PNG image of the plot, CSV field data (u, v, |V|, φ, ψ, Cp on a grid), CSV streamline and
-  equipotential polylines, CSV surface Cp of the bodies. The exports also run from the command line.
+  equipotential polylines, CSV surface Cp of the bodies, and MP4/GIF recordings. The exports also
+  run from the command line.
 - **View** menu: streamline density, arrows, wall images, equipotential lines, a |V| or Cp
   background, surface pressure, stagnation point markers, tracer particles.
+- **Verify** menu (F5): 22 physics checks run in front of you. Each compares the program with an
+  exact result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine
+  bodies, wall images, surface Cp, d'Alembert and Kutta–Joukowski. Each check shows its error
+  against its tolerance and the program's numbers beside theory, and can load its flow into the plot.
 - **Surface pressure**: the bodies (cylinder, Rankine oval, half-body, ...) are found from their
   stagnation points; their surfaces are coloured by Cp with pressure arrows, and a side panel plots
   Cp along the surface (exact curve for a cylinder) with the integrated lift and drag compared with
@@ -104,6 +117,10 @@ dumpbin /headers    build\msvc\bin\Release\PotentialFlowLab.exe | findstr subsys
   `COMDLG32.dll ole32.dll KERNEL32.dll USER32.dll GDI32.dll SHELL32.dll IMM32.dll` (COMDLG32
   provides the Open / Save dialogs; ole32 starts the Windows Imaging Component that writes PNGs).
 - `OPENGL32.dll` doesn't appear because GLFW loads it at runtime.
+- `MFPlat.DLL` and `MFReadWrite.dll` (Media Foundation, for MP4 recording) are listed separately
+  as *delay load* dependencies: they are loaded only when an MP4 is recorded. Windows "N" editions
+  without the Media Feature Pack lack them, and the program still starts there; only MP4 export
+  then reports that it is unavailable (GIF export still works).
 - Any `VCRUNTIME140*.dll`, `MSVCP140*.dll`, `api-ms-win-crt-*.dll` or `glfw3.dll` means the
   static linking broke.
 - The subsystem should read `2 subsystem (Windows GUI)`, which means no console window.

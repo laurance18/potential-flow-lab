@@ -1,5 +1,5 @@
-# pfl_io: scene save/load (JSON), the built-in example scenes and CSV data export. No graphics, so
-# the unit tests link it too.
+# pfl_io: scene save/load (JSON), the built-in example scenes, CSV data export and the GIF encoder.
+# No graphics, so the unit tests link it too.
 pfl_embed_resources(pfl_examples
     BASE_DIR "${PROJECT_SOURCE_DIR}"
     NAMESPACE examples
@@ -17,7 +17,8 @@ pfl_embed_resources(pfl_examples
 add_library(pfl_io STATIC
     scene_io.hpp scene_io.cpp
     examples.hpp examples.cpp
-    data_export.hpp data_export.cpp)
+    data_export.hpp data_export.cpp
+    gif_writer.hpp gif_writer.cpp)
 target_include_directories(pfl_io PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(pfl_io PUBLIC pfl_core PRIVATE nlohmann_json::nlohmann_json pfl_examples)
 pfl_set_warnings(pfl_io)

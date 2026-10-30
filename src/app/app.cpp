@@ -1,11 +1,14 @@
 #include "app/app.hpp"
 
 #include "app/platform_win32.hpp"
+#include "app/video_recorder.hpp"
 #include "core/dye.hpp"
+#include "core/parameters.hpp"
 #include "core/particles.hpp"
 #include "core/scene.hpp"
 #include "core/streamline.hpp"
 #include "core/surface_pressure.hpp"
+#include "core/sweep.hpp"
 #include "io/data_export.hpp"
 #include "io/examples.hpp"
 #include "io/scene_io.hpp"
@@ -16,11 +19,14 @@
 #include "render/trail_renderer.hpp"
 #include "ui/main_menu.hpp"
 #include "ui/parameter_dialog.hpp"
+#include "ui/parameter_panel.hpp"
 #include "ui/plot_view.hpp"
+#include "ui/record_dialog.hpp"
 #include "ui/status_bar.hpp"
 #include "ui/surface_panel.hpp"
 #include "ui/style.hpp"
 #include "ui/toolbar.hpp"
+#include "ui/verification_window.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -33,7 +39,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cwctype>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <string>
 #include <vector>
@@ -64,6 +72,12 @@ constexpr int k_exportColumns = 201;
 constexpr int k_captureDelayFrames = 3;
 // Command-line exports: frames drawn first, so the plot layout and streamlines have settled.
 constexpr int k_batchWarmupFrames = 6;
+constexpr double k_batchVideoSeconds = 6.0; // --export-video without --video-seconds
+
+// Sweep export: steps computed in each frame for at most this long, so the window stays responsive.
+constexpr double k_sweepFrameBudget = 0.03;
+// A notice at the right end of the menu bar (a file saved) shows this long.
+constexpr double k_noticeSeconds = 6.0;
 
 // Tracer particles.
 constexpr std::size_t k_particleCount = 4'000;
@@ -117,7 +131,7 @@ PressureScale pressureScale(double typicalSpeed, double freeStreamSpeed) {
 }
 
 // Actions that throw away the current scene, so they may need confirmation first.
-enum class DiscardingAction { None, New, Open, Example, Quit };
+enum class DiscardingAction { None, New, Open, Example, Verification, Quit };
 
 class App {
 public:
@@ -145,7 +159,8 @@ private:
     void openScene();
     void openExample(const ExampleScene& example);
     void saveScene(bool askForPath);
-    void setScene(Scene scene, std::filesystem::path path, const ExampleScene* example = nullptr);
+    // `name`: the title of an untitled scene that is neither an example nor a file (a verification flow).
+    void setScene(Scene scene, std::filesystem::path path, const ExampleScene* example = nullptr, std::string name = {});
     // `live`: one step of a drag; the particles keep flowing instead of starting over.
     void sceneEdited(bool live = false);
     void rebuildModel(bool live = false);
@@ -161,12 +176,25 @@ private:
     void exportField();
     void exportLines();
     void exportSurface();
+    void exportSweep();
+    void stepSweepExport();
+    std::optional<float> sweepExportProgress() const;
+    std::vector<std::uint8_t> readPlotPixels(int& width, int& height, std::string& error) const;
     bool writePlotImage(const std::filesystem::path& path, std::string& error) const;
     bool writeFieldCsv(const std::filesystem::path& path, std::string& error) const;
     bool writeLinesCsv(const std::filesystem::path& path, std::string& error) const;
     bool writeSurfaceCsv(const std::filesystem::path& path, std::string& error) const;
     void captureIfDue();
     void runBatchStep();
+    void showNotice(std::string text);
+
+    // Recording.
+    void requestRecording(const RecordSettings& settings);
+    void startBatchRecording();
+    bool advanceRecordingClock(double& dt);
+    void captureVideoFrame();
+    void finishRecording(std::string problem = {});
+    std::optional<RecordingProgress> recordingProgress() const;
 
     // Per-frame work after the UI.
     void updateStreamlines();
@@ -190,6 +218,7 @@ private:
     std::vector<std::string> m_warnings;
     std::filesystem::path m_path;
     const ExampleScene* m_example = nullptr; // the built-in example shown, until the scene is saved
+    std::string m_sceneName;                 // a verification flow shown, until the scene is saved
     bool m_dirty = false;
     std::string m_title;
 
@@ -198,6 +227,13 @@ private:
     SurfacePanel m_surfacePanel;
     std::optional<Vec2> m_surfaceMarker; // surface point picked in the Cp panel (last frame)
     ParameterDialog m_dialog;
+    ParameterPanel m_parameterPanel;
+    bool m_showParameters = false;
+    RecordDialog m_recordDialog;
+    VerificationWindow m_verification;
+    std::optional<VerificationShow> m_pendingShow; // for DiscardingAction::Verification
+    std::string m_notice;
+    double m_noticeUntil = 0.0; // glfwGetTime() when the notice goes away
     PlotViewResult m_plot; // plot geometry from the latest frame
     ImVec2 m_plotWindowPos{0.0f, 0.0f};  // the plot window (axes included), for image export
     ImVec2 m_plotWindowSize{0.0f, 0.0f};
@@ -233,9 +269,35 @@ private:
     };
     std::optional<ImageCapture> m_imageCapture;
 
+    // A recording in progress: frames of the plot go to the encoder thread (video_recorder.hpp).
+    struct Recording {
+        RecordSettings settings;
+        std::filesystem::path path;
+        int delayFrames = k_captureDelayFrames; // before the first frame, so no menu or dialog shows
+        bool started = false;
+        double clock = 0.0; // screen time not yet turned into video frames
+        int frames = 0;     // recorded so far
+        VideoSize capture;  // size of the first frame; every frame must match it
+        std::unique_ptr<VideoRecorder> recorder; // created with the first frame
+    };
+    std::optional<Recording> m_recording;
+
+    // A sweep CSV export in progress, computed a few steps per frame.
+    struct SweepExport {
+        std::filesystem::path path;
+        Scene scene; // as it was when the export started
+        ParameterRef parameter;
+        Rect view;
+        std::vector<double> values;
+        std::size_t next = 0;
+        std::vector<SweepSample> samples;
+    };
+    std::optional<SweepExport> m_sweepExport;
+
     // Command-line exports (then quit), if any were requested.
     CommandLine m_commandLine;
     int m_batchFrames = 0;
+    bool m_batchExported = false; // the files are written; a video may still be recording
     int m_exitCode = 0;
 };
 
@@ -411,6 +473,7 @@ void App::frame(double dt) {
     int fbHeight = 0;
     glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
     if (fbWidth <= 0 || fbHeight <= 0) return;
+    const bool videoFrame = m_recording && advanceRecordingClock(dt);
 
     // Size the particle layer to the plot before the UI records draw commands that use its texture
     // (resizing recreates the texture). The plot size is last frame's; a change shows a frame later.
@@ -427,7 +490,17 @@ void App::frame(double dt) {
     if (m_imageCapture || m_commandLine.batch()) ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     ImGui::NewFrame();
 
-    const MainMenuActions actions = drawMainMenu(m_scene, m_scene.plot, shaderHotReloadAvailable());
+    // A playing sweep moves its parameter before anything is drawn.
+    if (std::optional<ElementEdit> swept = m_parameterPanel.advance(m_scene, dt)) {
+        m_scene = applyEdit(std::move(m_scene), *swept);
+        sceneEdited(true);
+    }
+
+    const MainMenuState menuState{.canReloadShaders = shaderHotReloadAvailable(),
+                                  .parameterPanel = m_showParameters,
+                                  .recording = recordingProgress(),
+                                  .notice = glfwGetTime() < m_noticeUntil ? m_notice : std::string()};
+    const MainMenuActions actions = drawMainMenu(m_scene, m_scene.plot, menuState);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 workPos = viewport->WorkPos;
@@ -453,15 +526,27 @@ void App::frame(double dt) {
         layers.particles.texture = static_cast<ImTextureID>(m_trailRenderer->texture());
         layers.particles.beginBlend = premultipliedBlend;
     }
+    // Side panels on the right: the parameters above the Cp panel when both are open.
     const bool surfacePanel = m_scene.plot.showSurfacePressure;
-    const float panelWidth = surfacePanel ? surfacePanelWidth(workSize.x - toolWidth) : 0.0f;
+    const float available = workSize.x - toolWidth;
+    const float panelWidth = surfacePanel      ? surfacePanelWidth(available)
+                             : m_showParameters ? parameterPanelWidth(available)
+                                                : 0.0f;
     m_plotWindowPos = ImVec2(workPos.x + toolWidth, workPos.y);
     m_plotWindowSize = ImVec2(std::max(workSize.x - toolWidth - panelWidth, 1.0f), bodyHeight);
     m_plot = m_plotView.draw(m_plotWindowPos, m_plotWindowSize, m_scene, m_model, layers);
+    const ImVec2 panelPos(m_plotWindowPos.x + m_plotWindowSize.x, workPos.y);
+    float parametersHeight = 0.0f;
+    ParameterPanelResult parameters;
+    if (m_showParameters) {
+        parametersHeight = surfacePanel ? std::floor(0.45f * bodyHeight) : bodyHeight;
+        parameters = m_parameterPanel.draw(panelPos, ImVec2(panelWidth, parametersHeight), m_scene, m_plot.limits,
+                                           sweepExportProgress());
+    }
     m_surfaceMarker.reset();
     if (surfacePanel) {
-        m_surfaceMarker = m_surfacePanel.draw(ImVec2(m_plotWindowPos.x + m_plotWindowSize.x, workPos.y),
-                                              ImVec2(panelWidth, bodyHeight), m_surfaces, m_model);
+        m_surfaceMarker = m_surfacePanel.draw(ImVec2(panelPos.x, panelPos.y + parametersHeight),
+                                              ImVec2(panelWidth, bodyHeight - parametersHeight), m_surfaces, m_model);
     }
     m_scene.plot.view = m_plot.limits; // panning and zooming are saved with the scene, but are not "edits"
     if (m_plot.editRequest) m_dialog.openEdit(*m_plot.editRequest, m_scene.elements[*m_plot.editRequest]);
@@ -472,12 +557,25 @@ void App::frame(double dt) {
     }
     if (m_plot.rakeChange) applyRakeChange(*m_plot.rakeChange);
     if (m_plot.rakeRemove) removeRake(*m_plot.rakeRemove);
+    if (!parameters.edits.empty()) {
+        for (const ElementEdit& edit : parameters.edits) m_scene = applyEdit(std::move(m_scene), edit);
+        sceneEdited(true);
+    }
+    if (parameters.exportSweep) exportSweep();
+    if (parameters.cancelExport) m_sweepExport.reset();
 
     handleMenu(actions);
 
     if (const std::optional<ElementEdit> edit = m_dialog.draw(m_scene)) {
         m_scene = applyEdit(std::move(m_scene), *edit);
         sceneEdited();
+    }
+    const ImVec2 fbPerPoint = ImGui::GetIO().DisplayFramebufferScale;
+    const ImVec2 recordedPixels(m_plotWindowSize.x * fbPerPoint.x, m_plotWindowSize.y * fbPerPoint.y);
+    if (const std::optional<RecordSettings> settings = m_recordDialog.draw(recordedPixels)) requestRecording(*settings);
+    if (std::optional<VerificationShow> show = m_verification.draw()) {
+        m_pendingShow = std::move(show);
+        request(DiscardingAction::Verification);
     }
 
     if (m_confirmDiscard) {
@@ -496,6 +594,7 @@ void App::frame(double dt) {
     updateStreamlines();
     renderParticles(dt);
     updateDye(dt);
+    stepSweepExport();
 
     // --- Screen ---------------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -506,6 +605,7 @@ void App::frame(double dt) {
 
     // The back buffer now holds this frame; exports read it before it is swapped.
     captureIfDue();
+    if (videoFrame) captureVideoFrame();
     runBatchStep();
 }
 
@@ -522,6 +622,13 @@ void App::handleMenu(const MainMenuActions& actions) {
     if (actions.exportField) exportField();
     if (actions.exportLines) exportLines();
     if (actions.exportSurface) exportSurface();
+    if (actions.record) m_recordDialog.open(m_parameterPanel.sweepDescription(m_scene));
+    if (actions.stopRecording) finishRecording();
+    if (actions.toggleParameterPanel) {
+        m_showParameters = !m_showParameters;
+        if (!m_showParameters && !m_recording) m_parameterPanel.stop();
+    }
+    if (actions.verify) m_verification.open();
     if (actions.reloadShaders) reloadShaders();
     if (actions.resetView) m_plotView.setView(PlotSettings{}.view);
     if (actions.plotChanged) {
@@ -561,6 +668,10 @@ void App::perform(DiscardingAction action) {
     case DiscardingAction::New: setScene(Scene{}, {}); break;
     case DiscardingAction::Open: openScene(); break;
     case DiscardingAction::Example: openExample(exampleScenes()[m_pendingExample]); break;
+    case DiscardingAction::Verification:
+        if (m_pendingShow) setScene(std::move(m_pendingShow->scene), {}, nullptr, "Verification: " + m_pendingShow->title);
+        m_pendingShow.reset();
+        break;
     case DiscardingAction::Quit:
         m_quitConfirmed = true;
         glfwSetWindowShouldClose(m_window, GLFW_TRUE);
@@ -607,17 +718,20 @@ void App::saveScene(bool askForPath) {
     }
     m_path = path;
     m_example = nullptr;
+    m_sceneName.clear();
     m_dirty = false;
     updateTitle();
 }
 
-void App::setScene(Scene scene, std::filesystem::path path, const ExampleScene* example) {
+void App::setScene(Scene scene, std::filesystem::path path, const ExampleScene* example, std::string name) {
     m_scene = std::move(scene);
     m_path = std::move(path);
     m_example = example;
+    m_sceneName = std::move(name);
     m_dirty = false;
     m_plotView.setView(m_scene.plot.view);
     m_dye.clear();
+    m_parameterPanel.reset();
     rebuildModel();
     updateTitle();
 }
@@ -666,6 +780,7 @@ void App::rakesEdited() {
 void App::updateTitle() {
     const std::string name = !m_path.empty()        ? m_path.filename().string()
                              : m_example != nullptr ? std::string(m_example->title) + " (example)"
+                             : !m_sceneName.empty() ? m_sceneName
                                                     : std::string("Untitled");
     const std::string title = name + (m_dirty ? "*" : "") + " - " + k_appName;
     if (title != m_title) {
@@ -841,7 +956,8 @@ void App::exportSurface() {
     if (path && !writeSurfaceCsv(*path, error)) showErrorMessage(m_window, "Could not export surface Cp", error);
 }
 
-bool App::writePlotImage(const std::filesystem::path& path, std::string& error) const {
+// The plot window (axes included) from the back buffer: 8-bit RGBA, rows top to bottom.
+std::vector<std::uint8_t> App::readPlotPixels(int& width, int& height, std::string& error) const {
     int fbWidth = 0;
     int fbHeight = 0;
     glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
@@ -849,11 +965,11 @@ bool App::writePlotImage(const std::filesystem::path& path, std::string& error) 
     const ImVec2 origin = ImGui::GetMainViewport()->Pos;
     const int left = std::clamp(static_cast<int>(std::lround((m_plotWindowPos.x - origin.x) * scale.x)), 0, fbWidth);
     const int top = std::clamp(static_cast<int>(std::lround((m_plotWindowPos.y - origin.y) * scale.y)), 0, fbHeight);
-    const int width = std::min(static_cast<int>(std::lround(m_plotWindowSize.x * scale.x)), fbWidth - left);
-    const int height = std::min(static_cast<int>(std::lround(m_plotWindowSize.y * scale.y)), fbHeight - top);
+    width = std::min(static_cast<int>(std::lround(m_plotWindowSize.x * scale.x)), fbWidth - left);
+    height = std::min(static_cast<int>(std::lround(m_plotWindowSize.y * scale.y)), fbHeight - top);
     if (width <= 0 || height <= 0) {
         error = "The plot is not visible.";
-        return false;
+        return {};
     }
 
     // GL rows start at the bottom; PNG rows at the top.
@@ -867,7 +983,14 @@ bool App::writePlotImage(const std::filesystem::path& path, std::string& error) 
         std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(rowBytes * static_cast<std::size_t>(height - 1 - row)),
                     rowBytes, flipped.begin() + static_cast<std::ptrdiff_t>(rowBytes * static_cast<std::size_t>(row)));
     }
-    return writePng(path, width, height, flipped.data(), error);
+    return flipped;
+}
+
+bool App::writePlotImage(const std::filesystem::path& path, std::string& error) const {
+    int width = 0;
+    int height = 0;
+    const std::vector<std::uint8_t> pixels = readPlotPixels(width, height, error);
+    return !pixels.empty() && writePng(path, width, height, pixels.data(), error);
 }
 
 bool App::writeFieldCsv(const std::filesystem::path& path, std::string& error) const {
@@ -900,8 +1023,176 @@ void App::captureIfDue() {
     m_imageCapture.reset();
 }
 
+void App::exportSweep() {
+    const std::optional<SweepSetup> setup = m_parameterPanel.sweep(m_scene);
+    if (!setup || m_sweepExport) return;
+    const std::optional<std::filesystem::path> path = showSaveCsvDialog(m_window, suggestedExportPath("_sweep.csv"));
+    if (!path) return;
+    m_sweepExport = SweepExport{.path = *path,
+                                .scene = m_scene,
+                                .parameter = setup->parameter,
+                                .view = m_plot.limits,
+                                .values = sweepValues(setup->from, setup->to, setup->steps)};
+}
+
+// Finding the bodies takes a while, so the sweep runs a few steps per frame and the window stays
+// responsive (the panel shows the progress).
+void App::stepSweepExport() {
+    if (!m_sweepExport) return;
+    SweepExport& job = *m_sweepExport;
+    const double start = glfwGetTime();
+    while (job.next < job.values.size() && glfwGetTime() - start < k_sweepFrameBudget) {
+        if (std::optional<SweepSample> sample = sampleSweep(job.scene, job.parameter, job.values[job.next], job.view)) {
+            job.samples.push_back(std::move(*sample));
+        }
+        ++job.next;
+    }
+    if (job.next < job.values.size()) return;
+
+    std::string error;
+    if (writeTextFile(job.path, sweepCsv(job.samples), error)) {
+        showNotice(std::format("Saved {} ({} steps)", job.path.filename().string(), job.samples.size()));
+    } else {
+        showErrorMessage(m_window, "Could not export the sweep", error);
+    }
+    m_sweepExport.reset();
+}
+
+std::optional<float> App::sweepExportProgress() const {
+    if (!m_sweepExport) return std::nullopt;
+    return static_cast<float>(m_sweepExport->next) / static_cast<float>(std::max<std::size_t>(m_sweepExport->values.size(), 1));
+}
+
+void App::showNotice(std::string text) {
+    m_notice = std::move(text);
+    m_noticeUntil = glfwGetTime() + k_noticeSeconds;
+}
+
+void App::requestRecording(const RecordSettings& settings) {
+    const bool gif = settings.format == VideoFormat::Gif;
+    const std::optional<std::filesystem::path> path =
+        showSaveVideoDialog(m_window, suggestedExportPath(gif ? ".gif" : ".mp4"), gif);
+    if (path) m_recording = Recording{.settings = settings, .path = *path};
+}
+
+// --export-video: a GIF if the name ends in .gif, else an MP4, recorded from the first frame on.
+void App::startBatchRecording() {
+    const std::filesystem::path& path = *m_commandLine.exportVideo;
+    std::wstring extension = path.extension().wstring();
+    for (wchar_t& c : extension) c = static_cast<wchar_t>(std::towlower(c));
+    RecordSettings settings;
+    settings.format = extension == L".gif" ? VideoFormat::Gif : VideoFormat::Mp4;
+    settings.fps = m_commandLine.videoFps.value_or(settings.format == VideoFormat::Gif ? 20 : 30);
+    settings.seconds = m_commandLine.videoSeconds.value_or(k_batchVideoSeconds);
+    m_recording = Recording{.settings = settings, .path = path, .delayFrames = 0};
+}
+
+// While recording, the animation advances exactly 1/fps per video frame, so the video plays at the
+// right speed however fast or unevenly the screen draws. The screen usually draws faster than the
+// video's frame rate: the frames in between hold the animation still (dt = 0). In batch mode every
+// frame goes into the video. Returns whether this frame does.
+bool App::advanceRecordingClock(double& dt) {
+    Recording& r = *m_recording;
+    if (r.delayFrames > 0) {
+        --r.delayFrames;
+        return false;
+    }
+    const double step = 1.0 / r.settings.fps;
+    if (!r.started) {
+        r.started = true;
+        r.clock = step; // the first frame goes in
+        if (r.settings.restart) {
+            m_respawnParticles = true;
+            m_trailRenderer->clear();
+            m_dye.clear();
+        }
+        if (r.settings.sweep) m_parameterPanel.playOnce(frameCount(r.settings) * step);
+    }
+    if (m_commandLine.batch()) {
+        dt = step;
+        return true;
+    }
+    r.clock += dt;
+    if (r.clock < step) {
+        dt = 0.0;
+        return false;
+    }
+    r.clock = std::min(r.clock - step, step); // a slow screen catches up one frame at a time
+    dt = step;
+    return true;
+}
+
+void App::captureVideoFrame() {
+    Recording& r = *m_recording;
+    int width = 0;
+    int height = 0;
+    std::string error;
+    std::vector<std::uint8_t> pixels = readPlotPixels(width, height, error);
+    if (pixels.empty()) {
+        finishRecording(error);
+        return;
+    }
+    if (!r.recorder) { // the first frame: the video size is known now
+        r.capture = {width, height};
+        auto recorder = std::make_unique<VideoRecorder>();
+        if (!recorder->start(r.path, r.settings.format, r.capture, videoSize(width, height, r.settings), r.settings.fps,
+                             error)) {
+            finishRecording(error);
+            return;
+        }
+        r.recorder = std::move(recorder);
+    }
+    if (width != r.capture.width || height != r.capture.height) {
+        finishRecording(std::format("The window changed size, so the recording stopped after {:.1f} s. The video "
+                                    "up to then is saved in {}.",
+                                    static_cast<double>(r.frames) / r.settings.fps, r.path.filename().string()));
+        return;
+    }
+    if (!r.recorder->addFrame(std::move(pixels))) {
+        finishRecording(); // the recorder says what went wrong
+        return;
+    }
+    if (++r.frames >= frameCount(r.settings)) finishRecording();
+}
+
+// Ends the recording (finished, stopped, or failed with `problem`) and closes the file.
+void App::finishRecording(std::string problem) {
+    if (!m_recording) return;
+    Recording r = std::move(*m_recording);
+    m_recording.reset();
+    if (r.settings.sweep) m_parameterPanel.stop();
+    std::string error;
+    if (r.recorder && !r.recorder->finish(error)) problem = error;
+    if (!r.recorder && problem.empty()) return; // stopped before the first frame: no file
+
+    if (m_commandLine.batch()) {
+        if (!problem.empty()) {
+            logMessage("Could not record the video " + r.path.string() + ": " + problem);
+            m_exitCode = 1;
+        }
+    } else if (!problem.empty()) {
+        showErrorMessage(m_window, "Recording", problem);
+    } else {
+        showNotice(std::format("Saved {} ({:.1f} s)", r.path.filename().string(),
+                               static_cast<double>(r.frames) / r.settings.fps));
+    }
+}
+
+std::optional<RecordingProgress> App::recordingProgress() const {
+    if (!m_recording) return std::nullopt;
+    const RecordSettings& s = m_recording->settings;
+    return RecordingProgress{.seconds = static_cast<double>(m_recording->frames) / s.fps,
+                             .total = static_cast<double>(frameCount(s)) / s.fps};
+}
+
 void App::runBatchStep() {
-    if (!m_commandLine.batch() || ++m_batchFrames < k_batchWarmupFrames || m_streamlinesDirty) return;
+    if (!m_commandLine.batch() || m_recording) return;
+    if (m_batchExported) { // and the video, if any, is recorded
+        m_quitConfirmed = true;
+        glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+        return;
+    }
+    if (++m_batchFrames < k_batchWarmupFrames || m_streamlinesDirty) return;
     const auto run = [this](const std::optional<std::filesystem::path>& path, const char* what, auto write) {
         std::string error;
         if (!path || (this->*write)(*path, error)) return;
@@ -912,8 +1203,8 @@ void App::runBatchStep() {
     run(m_commandLine.exportField, "field data", &App::writeFieldCsv);
     run(m_commandLine.exportLines, "lines", &App::writeLinesCsv);
     run(m_commandLine.exportSurface, "surface Cp", &App::writeSurfaceCsv);
-    m_quitConfirmed = true;
-    glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+    m_batchExported = true;
+    if (m_commandLine.exportVideo) startBatchRecording();
 }
 
 StatusInfo App::statusInfo() const {

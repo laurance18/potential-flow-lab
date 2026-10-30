@@ -5,6 +5,8 @@
 
 #include <imgui.h>
 
+#include <format>
+
 namespace pfl {
 namespace {
 
@@ -20,8 +22,11 @@ void drawExamplesMenu(MainMenuActions& actions) {
     ImGui::EndMenu();
 }
 
-void drawViewMenu(PlotSettings& plot, MainMenuActions& actions) {
+void drawViewMenu(PlotSettings& plot, bool parameterPanel, MainMenuActions& actions) {
     if (!ImGui::BeginMenu("View")) return;
+    if (ImGui::MenuItem("Parameters", "Ctrl+P", parameterPanel)) actions.toggleParameterPanel = true;
+    ImGui::SetItemTooltip("A panel with a live slider for every element parameter, and the parameter sweep\n"
+                          "(animate one parameter, or export the stagnation points and forces along it).");
     if (ImGui::MenuItem("Reset view")) actions.resetView = true;
     ImGui::SetItemTooltip("Show the default region -4 < x < 4, -2.5 < y < 2.5.\n"
                           "Scroll to zoom and drag to pan the plot.");
@@ -66,16 +71,51 @@ void drawViewMenu(PlotSettings& plot, MainMenuActions& actions) {
     ImGui::EndMenu();
 }
 
+void drawVerifyMenu(MainMenuActions& actions) {
+    if (!ImGui::BeginMenu("Verify")) return;
+    if (ImGui::MenuItem("Physics checks...", "F5")) actions.verify = true;
+    ImGui::SetItemTooltip("Run the program against the exact results of potential-flow theory (elementary flows,\n"
+                          "superposition, walls, surface pressure, lift and drag, streamlines) and see each one pass.");
+    ImGui::EndMenu();
+}
+
+// Right end of the menu bar: the recording in progress, or the notice.
+void drawMenuBarStatus(const MainMenuState& state, MainMenuActions& actions) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    if (state.recording) {
+        const std::string text = std::format("Recording  {:.1f} / {:.1f} s", state.recording->seconds, state.recording->total);
+        const float width = ImGui::GetFontSize() + ImGui::CalcTextSize(text.c_str()).x + ImGui::CalcTextSize("Stop").x +
+                            2.0f * style.FramePadding.x + 3.0f * style.ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width);
+        // A red dot, like a camera's.
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float r = 0.3f * ImGui::GetFontSize();
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + r, p.y + 0.5f * ImGui::GetFrameHeight()), r,
+                                                    IM_COL32(235, 60, 60, 255));
+        ImGui::Dummy(ImVec2(2.0f * r, ImGui::GetFrameHeight()));
+        ImGui::TextUnformatted(text.c_str());
+        if (ImGui::SmallButton("Stop")) actions.stopRecording = true;
+        ImGui::SetItemTooltip("Stop now and keep what has been recorded.");
+    } else if (!state.notice.empty()) {
+        const float width = ImGui::CalcTextSize(state.notice.c_str()).x + 2.0f * style.ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width);
+        ImGui::TextDisabled("%s", state.notice.c_str());
+    }
+}
+
 } // namespace
 
-MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, bool canReloadShaders) {
+MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainMenuState& state) {
     MainMenuActions actions;
+    const bool canReloadShaders = state.canReloadShaders;
     constexpr ImGuiInputFlags route = ImGuiInputFlags_RouteGlobal;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, route)) actions.newScene = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, route)) actions.open = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, route)) actions.save = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, route)) actions.saveAs = true;
     if (canReloadShaders && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route)) actions.reloadShaders = true;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, route)) actions.toggleParameterPanel = true;
+    if (ImGui::Shortcut(ImGuiKey_F5, route)) actions.verify = true;
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
@@ -95,6 +135,13 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, bool canRel
             if (ImGui::MenuItem("Export surface Cp (CSV)...", nullptr, false, hasFlow)) actions.exportSurface = true;
             ImGui::SetItemTooltip("x, y, arc length, x/c, angle and Cp (and the exact Cp for a cylinder) at every\n"
                                   "point of every body surface found in the flow.");
+            if (state.recording) {
+                if (ImGui::MenuItem("Stop recording")) actions.stopRecording = true;
+            } else if (ImGui::MenuItem("Record animation (MP4 / GIF)...", nullptr, false, hasFlow)) {
+                actions.record = true;
+            }
+            ImGui::SetItemTooltip("Record the animated plot (particles, dye, live edits, a parameter sweep) as an MP4\n"
+                                  "video or an animated GIF.");
             ImGui::Separator();
             if (ImGui::MenuItem("Clear All", nullptr, false, !scene.elements.empty() || !scene.rakes.empty())) {
                 actions.clearAll = true;
@@ -107,7 +154,9 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, bool canRel
         }
         drawExamplesMenu(actions);
         actions.elements = drawElementsMenu(scene);
-        drawViewMenu(plot, actions);
+        drawViewMenu(plot, state.parameterPanel, actions);
+        drawVerifyMenu(actions);
+        drawMenuBarStatus(state, actions);
         ImGui::EndMainMenuBar();
     }
     return actions;

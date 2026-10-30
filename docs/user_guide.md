@@ -17,7 +17,7 @@ The window has four parts:
 |---|---|
 | Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below them, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
-| Menu bar (top) | **File** (including exports), **Examples**, **Elements** and **View** menus. |
+| Menu bar (top) | **File** (including exports), **Examples**, **Elements**, **View** and **Verify** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
 
 ## The flow view
@@ -127,6 +127,69 @@ symmetric and they miss each other slightly. Gaps up to 10 % of the distance bet
 stagnation points are closed with a short segment, and the panel says so. Some flows have no closed
 body at all: for a source and sink at incidence, part of the source's fluid escapes downstream.
 
+## Live parameters and sweeps
+
+**View → Parameters** (Ctrl+P) opens a panel on the right with a slider for every parameter of
+every element: strengths, speeds, positions and angles (in degrees). With the Cp panel open too,
+the parameters take the top part of the column.
+
+- Drag a slider and the flow follows live, as when dragging an element on the plot: streamlines,
+  contours, stagnation points, bodies and the Cp panel update while the particles keep flowing.
+- **Ctrl+click** a slider to type an exact value. A slider's range is chosen when it first shows:
+  ±2|value| rounded up to 1, 2 or 5 × 10ⁿ (at least ±2) for strengths, 0 to that for speeds, ±180°
+  for angles and the current view for positions. Typing a value outside the range widens it.
+- Values that would make an element invalid (a negative speed, a sector with θ₂ ≤ θ₁) are not
+  applied.
+
+The **Sweep** section steps one parameter from **From** to **To**. Choose it in the list, or
+right-click its slider and pick *Sweep this parameter*; its label turns blue.
+
+- **Play** animates it back and forth over **Duration** seconds (or From → To and start again,
+  with *Back and forth* off). Stop leaves the parameter where it is. A classic one: sweep Γ of the
+  lifting cylinder from 0 to 4π and watch the two stagnation points slide down and merge.
+- **Export CSV...** evaluates the flow at **Steps** evenly spaced values (both ends included) over
+  the current view, a few per frame with a progress bar, and writes one file:
+
+  | Column | Meaning |
+  |---|---|
+  | `step`, `value` | step number (from 1) and the parameter value (angles in radians) |
+  | `kind`, `index` | `stagnation` (one row per stagnation point) or `body` (one row per body found) |
+  | `x`, `y` | the stagnation point, or the body's centroid (a half-body: its stagnation point) |
+  | `closed` | 1 for a closed body, 0 for a half-body |
+  | `chord`, `circulation` | of a closed body |
+  | `lift_q`, `drag_q`, `cl`, `cd` | L′/q∞, D′/q∞ and the coefficients from the surface Cp |
+  | `cp_min` | the lowest Cp on the surface |
+  | `lift_q_exact` | 2Γ/V∞ (Kutta–Joukowski) for an isolated closed body |
+
+  Columns that do not apply are `NaN`. Steps where the value makes the element invalid are left
+  out. To plot lift against Γ in Python:
+  `d = pandas.read_csv("flow_sweep.csv"); b = d[d.kind == "body"]; plot(b.value, b.lift_q)`.
+
+## Recording animations
+
+**File → Record animation (MP4 / GIF)...** records the plot, axes included, as a video:
+
+| Option | |
+|---|---|
+| Format | **MP4** (H.264): small, smooth colours, plays everywhere (PowerPoint, browsers, phones). **Animated GIF**: loops forever and goes wherever an image can (web pages, chat, Markdown), with at most 255 colours per frame and larger files. |
+| Length | seconds of video (Ctrl+click to type up to 10 minutes) |
+| Frame rate | MP4 24–60 fps, GIF 10–50 fps |
+| Size | 100 %, 75 % or 50 % of the plot on screen. Half-size GIFs are about a quarter of the file size. |
+| Start from fresh particles and dye | respawn the particles and clear the dye first, so the video shows the dye leaving the rakes |
+| Sweep ... | play the parameter sweep once, From to To, over the length of the video |
+
+After choosing the file name, recording starts; the menu bar shows a red dot, the time recorded and
+a **Stop** button (File → Stop recording does the same and keeps what was recorded). You can keep
+working: drag elements, move sliders or pan, and the video shows it.
+
+The animation advances exactly one video frame (1/fps) for every frame recorded. The video
+therefore plays at the right speed even when the screen is slower than the video's frame rate, or
+when encoding makes it stutter. On a fast screen the frames drawn between two video frames simply
+hold the animation still. Resizing the window stops the recording, and the video so far is kept.
+
+MP4 export uses Windows Media Foundation. Windows "N" editions do not include it unless the
+Media Feature Pack is installed; there, record a GIF instead.
+
 ## Symmetry walls
 
 A symmetry wall is an infinite straight line that the flow cannot cross. The program enforces it
@@ -157,7 +220,9 @@ invalid element (for example θ₂ ≤ θ₁) is rejected with a message naming 
 
 ## Exporting images and data
 
-The **File** menu has four exports. Each one asks where to save the file.
+The **File** menu has four exports, besides **Record animation** (see *Recording animations*);
+the sweep CSV is exported from the Parameters panel (see *Live parameters and sweeps*). Each one
+asks where to save the file.
 
 | Export | What it writes |
 |---|---|
@@ -183,6 +248,41 @@ PotentialFlowLab.exe examples\cylinder.json --export-image cylinder.png --export
 The window opens briefly, the scene is drawn, the files are written and the program exits. The
 exit code is 0 on success and 1 if a file could not be written. `tools/report_figures.py` uses this
 to produce every figure and validation number in the report.
+
+Videos too: `--export-video` records an MP4, or a GIF when the name ends in `.gif`, after the other
+exports. `--video-seconds` (default 6) and `--video-fps` (default 30 for MP4, 20 for GIF) set its
+length and frame rate:
+
+```powershell
+PotentialFlowLab.exe examples\lifting_cylinder.json --export-video lifting_cylinder.mp4 --video-seconds 10
+```
+
+## Verifying the physics
+
+**Verify → Physics checks...** (F5) tests the program against potential-flow theory, in front of
+you. Each of the 22 checks builds a flow with the program's own code and compares it with the exact
+result, written out separately in polar form, without using the program's equations. The checks
+are in six groups:
+
+| Group | What is checked |
+|---|---|
+| Foundations | div V = 0 and curl V = 0 (Laplace), W = dF/dz for every element, and the flux and circulation around closed curves |
+| Elementary flows | Uniform flow, source and sink, vortex, doublet, corner flow and plate edge, at every node of a 201 × 117 grid |
+| Superposition and bodies | Cylinder with and without circulation, its stagnation points, the Rankine oval and half-body (ψ along the traced surface), a source near a wall |
+| Symmetry walls | No flow through an inclined wall or through two perpendicular walls |
+| Pressure and forces | Cp on the cylinder, d'Alembert's paradox, Kutta–Joukowski lift |
+| Streamlines and equipotentials | Vortex streamlines are circles, and equipotentials cross the streamlines at 90° |
+
+The checks run one after another, and each turns into a green tick when it passes (red cross if
+not). The bar beside it shows −log₁₀ of the error, about how many digits agree with theory, and
+the white tick on the bar marks the tolerance. Where both sides are exact formulas, only rounding
+separates them, so the tolerance is 10⁻¹². Checks that trace a surface, integrate a force or
+differentiate numerically are only as accurate as that step, and their tolerances are looser.
+
+Click a check to open it. You see what theory says, how the program was tested, the program's
+numbers next to the exact ones, the error and the tolerance. **Show in plot** loads that flow into
+the plot, so you can look at it and change it. **Copy report** copies every result as plain text,
+for example for a lab report. The same checks run in the unit tests (`tests/test_verification.cpp`).
 
 ## Troubleshooting
 

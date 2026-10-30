@@ -90,6 +90,36 @@ std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& 
     return out;
 }
 
+std::string sweepCsv(const std::vector<SweepSample>& samples) {
+    const double nan = std::nan("");
+    std::string out = "step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact\n";
+    const auto row = [&out](std::size_t step, double value, const char* kind, std::size_t index,
+                            std::initializer_list<double> values) {
+        std::format_to(std::back_inserter(out), "{},", step);
+        appendNumber(out, value);
+        std::format_to(std::back_inserter(out), ",{},{},", kind, index);
+        for (const double v : values) {
+            appendNumber(out, v);
+            out += ',';
+        }
+        out.back() = '\n';
+    };
+    for (std::size_t s = 0; s < samples.size(); ++s) {
+        const SweepSample& sample = samples[s];
+        for (std::size_t i = 0; i < sample.stagnationPoints.size(); ++i) {
+            const Vec2 p = sample.stagnationPoints[i];
+            row(s + 1, sample.value, "stagnation", i + 1, {p.x, p.y, nan, nan, nan, nan, nan, nan, nan, nan, nan});
+        }
+        for (std::size_t i = 0; i < sample.bodies.size(); ++i) {
+            const SweepBody& b = sample.bodies[i];
+            row(s + 1, sample.value, "body", i + 1,
+                {b.centroid.x, b.centroid.y, b.closed ? 1.0 : 0.0, b.chord, b.circulation, b.lift, b.drag,
+                 b.lift / b.chord, b.drag / b.chord, b.cpMin, b.exactLift});
+        }
+    }
+    return out;
+}
+
 bool writeTextFile(const std::filesystem::path& path, std::string_view text, std::string& error) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (file) file.write(text.data(), static_cast<std::streamsize>(text.size()));
