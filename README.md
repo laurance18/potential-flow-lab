@@ -178,9 +178,3 @@ examples/     example scenes (cylinder, lifting cylinder, Rankine bodies, corner
 | doctest | v2.5.3 |
 | glad | glad2 2.0.8, GL 4.6 core + KHR_debug (generated, committed) |
 
-## OpenGL notes
-
-The app requests an **OpenGL 3.3 core** context. On Windows, current NVIDIA, AMD and Intel
-drivers all provide 4.6, so **4.3 compute shaders** are available for later GPU particle work.
-Keep a 3.3 fallback anyway, because some machines (VMs, Remote Desktop, old drivers) are limited
-to older versions. macOS tops out at 4.1, but this project targets Windows only.
