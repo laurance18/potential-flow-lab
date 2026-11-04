@@ -36,6 +36,8 @@ struct DyeRake {
     Vec2 start{-3.0, -1.0};
     Vec2 end{-3.0, 1.0};
     int emitters = 9;
+
+    friend bool operator==(const DyeRake&, const DyeRake&) = default;
 };
 
 inline constexpr int k_maxRakeEmitters = 64;

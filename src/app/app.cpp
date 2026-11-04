@@ -3,6 +3,7 @@
 #include "app/platform_win32.hpp"
 #include "app/video_recorder.hpp"
 #include "core/dye.hpp"
+#include "core/history.hpp"
 #include "core/parameters.hpp"
 #include "core/particles.hpp"
 #include "core/scene.hpp"
@@ -167,6 +168,12 @@ private:
     void applyRakeChange(const RakeChange& change);
     void removeRake(std::size_t index);
     void rakesEdited();
+    bool gestureActive() const;
+    bool editInProgress() const;
+    void commitEdit();
+    void undo();
+    void redo();
+    void showSnapshot(SceneSnapshot snapshot);
     void updateTitle();
     void onCloseRequested();
 
@@ -221,6 +228,8 @@ private:
     std::string m_sceneName;                 // a verification flow shown, until the scene is saved
     bool m_dirty = false;
     std::string m_title;
+    EditHistory m_history;
+    bool m_uncommitted = false; // an edit since the last commit to m_history
 
     // UI state.
     PlotView m_plotView;
@@ -498,6 +507,8 @@ void App::frame(double dt) {
 
     const MainMenuState menuState{.canReloadShaders = shaderHotReloadAvailable(),
                                   .parameterPanel = m_showParameters,
+                                  .canUndo = m_history.canUndo() || m_uncommitted,
+                                  .canRedo = m_history.canRedo() && !m_uncommitted,
                                   .recording = recordingProgress(),
                                   .notice = glfwGetTime() < m_noticeUntil ? m_notice : std::string()};
     const MainMenuActions actions = drawMainMenu(m_scene, m_scene.plot, menuState);
@@ -588,6 +599,7 @@ void App::frame(double dt) {
     }
 
     drawStatusBar(ImVec2(workPos.x, workPos.y + bodyHeight), ImVec2(workSize.x, statusHeight), statusInfo());
+    commitEdit();
     ImGui::Render();
 
     // --- Flow -----------------------------------------------------------------------------
@@ -618,6 +630,8 @@ void App::handleMenu(const MainMenuActions& actions) {
         request(DiscardingAction::Example);
     }
     if (actions.save || actions.saveAs) saveScene(actions.saveAs);
+    if (actions.undo) undo();
+    if (actions.redo) redo();
     if (actions.exportImage) exportImage();
     if (actions.exportField) exportField();
     if (actions.exportLines) exportLines();
@@ -732,12 +746,15 @@ void App::setScene(Scene scene, std::filesystem::path path, const ExampleScene* 
     m_plotView.setView(m_scene.plot.view);
     m_dye.clear();
     m_parameterPanel.reset();
+    m_history.reset(snapshotOf(m_scene));
+    m_uncommitted = false;
     rebuildModel();
     updateTitle();
 }
 
 void App::sceneEdited(bool live) {
     m_dirty = true;
+    m_uncommitted = true;
     rebuildModel(live);
     updateTitle();
 }
@@ -774,6 +791,52 @@ void App::removeRake(std::size_t index) {
 // Rakes are saved with the scene but do not change the flow.
 void App::rakesEdited() {
     m_dirty = true;
+    m_uncommitted = true;
+    updateTitle();
+}
+
+// A drag on the plot, or a slider held or being typed into.
+bool App::gestureActive() const {
+    return ImGui::IsAnyItemActive() || ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+           ImGui::IsMouseDown(ImGuiMouseButton_Right);
+}
+
+// A gesture or a playing sweep: the edit is not finished yet.
+bool App::editInProgress() const { return gestureActive() || m_parameterPanel.playing(); }
+
+// Edits go into the undo history once they are finished, so a whole gesture is one step.
+void App::commitEdit() {
+    if (!m_uncommitted || editInProgress()) return;
+    m_history.commit(snapshotOf(m_scene));
+    m_uncommitted = false;
+}
+
+void App::undo() {
+    if (gestureActive()) return; // let go of the drag first
+    m_parameterPanel.stop(); // a playing sweep would set its parameter again
+    if (std::optional<SceneSnapshot> previous = m_history.undo(snapshotOf(m_scene))) showSnapshot(std::move(*previous));
+    m_uncommitted = false;
+}
+
+void App::redo() {
+    if (gestureActive()) return;
+    m_parameterPanel.stop();
+    if (std::optional<SceneSnapshot> next = m_history.redo(snapshotOf(m_scene))) showSnapshot(std::move(*next));
+    m_uncommitted = false;
+}
+
+void App::showSnapshot(SceneSnapshot snapshot) {
+    // Dye keeps flowing from rakes that are still there; added or removed rakes start new streaks.
+    if (snapshot.rakes.size() != m_scene.rakes.size()) {
+        m_dye.detach();
+    } else {
+        for (std::size_t i = 0; i < snapshot.rakes.size(); ++i) {
+            if (snapshot.rakes[i].emitters != m_scene.rakes[i].emitters) m_dye.detach();
+        }
+    }
+    restore(m_scene, std::move(snapshot));
+    m_dirty = true;
+    rebuildModel();
     updateTitle();
 }
 

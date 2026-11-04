@@ -28,18 +28,24 @@ constexpr Vec2 velocityFromW(Complex w) { return {w.real(), -w.imag()}; }
 struct UniformFlow {
     double speed = 1.0; // V_inf, >= 0
     double angle = 0.0; // alpha
+
+    friend bool operator==(const UniformFlow&, const UniformFlow&) = default;
 };
 
 // W = Lambda / (2 pi zeta).
 struct SourceSink {
     double strength = 1.0; // Lambda: volume flow rate per unit depth; > 0 source, < 0 sink
     Vec2 position;
+
+    friend bool operator==(const SourceSink&, const SourceSink&) = default;
 };
 
 // W = i Gamma / (2 pi zeta).
 struct Vortex {
     double circulation = 1.0; // Gamma; > 0 clockwise
     Vec2 position;
+
+    friend bool operator==(const Vortex&, const Vortex&) = default;
 };
 
 // W = -mu e^{i beta} / zeta^2. With beta = 0 the flow leaves the centre towards -x and returns
@@ -49,6 +55,8 @@ struct Doublet {
     double strength = 1.0; // mu
     Vec2 position;
     double angle = 0.0; // beta: rotates the doublet axis counter-clockwise
+
+    friend bool operator==(const Doublet&, const Doublet&) = default;
 };
 
 // F = V (zeta e^{-i theta1})^n with n = pi / (theta2 - theta1): flow inside the wedge between the
@@ -61,6 +69,8 @@ struct SectorFlow {
 
     double opening() const { return wall2 - wall1; }
     double exponent() const { return std::numbers::pi / opening(); }
+
+    friend bool operator==(const SectorFlow&, const SectorFlow&) = default;
 };
 
 using FlowElement = std::variant<UniformFlow, SourceSink, Vortex, Doublet, SectorFlow>;

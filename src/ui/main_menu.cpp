@@ -12,6 +12,15 @@ namespace {
 
 constexpr const char* k_discardPopup = "Unsaved changes";
 
+void drawEditMenu(const MainMenuState& state, MainMenuActions& actions) {
+    if (!ImGui::BeginMenu("Edit")) return;
+    if (ImGui::MenuItem("Undo", "Ctrl+Z", false, state.canUndo)) actions.undo = true;
+    ImGui::SetItemTooltip("Take back the last change to the elements or dye rakes (a whole drag, slider move or\n"
+                          "sweep is one change). The view and the View settings are not affected.");
+    if (ImGui::MenuItem("Redo", "Ctrl+Y", false, state.canRedo)) actions.redo = true;
+    ImGui::EndMenu();
+}
+
 void drawExamplesMenu(MainMenuActions& actions) {
     if (!ImGui::BeginMenu("Examples")) return;
     const std::span<const ExampleScene> examples = exampleScenes();
@@ -116,6 +125,14 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
     if (canReloadShaders && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route)) actions.reloadShaders = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, route)) actions.toggleParameterPanel = true;
     if (ImGui::Shortcut(ImGuiKey_F5, route)) actions.verify = true;
+    // Not while a dialog or menu is open; a text field being edited takes Ctrl+Z for itself.
+    if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) actions.undo = true;
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, route) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, route)) {
+            actions.redo = true;
+        }
+    }
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
@@ -152,6 +169,7 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
             if (ImGui::MenuItem("Quit", "Alt+F4")) actions.quit = true;
             ImGui::EndMenu();
         }
+        drawEditMenu(state, actions);
         drawExamplesMenu(actions);
         actions.elements = drawElementsMenu(scene);
         drawViewMenu(plot, state.parameterPanel, actions);

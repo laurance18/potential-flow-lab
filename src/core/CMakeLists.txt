@@ -5,6 +5,7 @@ add_library(pfl_core STATIC
     flow_field.hpp flow_field.cpp
     image_system.hpp image_system.cpp
     scene.hpp scene.cpp
+    history.hpp history.cpp
     streamline.hpp streamline.cpp
     surface_pressure.hpp surface_pressure.cpp
     parameters.hpp parameters.cpp

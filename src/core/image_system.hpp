@@ -32,6 +32,8 @@ struct SymmetryWall {
 
     Vec2 direction() const { return {std::cos(angle), std::sin(angle)}; }
     Vec2 normal() const { return perp(direction()); }
+
+    friend bool operator==(const SymmetryWall&, const SymmetryWall&) = default;
 };
 
 Vec2 reflect(Vec2 p, const SymmetryWall& wall);

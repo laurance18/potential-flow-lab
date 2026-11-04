@@ -24,6 +24,8 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   advances exactly one video frame per captured frame, so the video plays at the right speed. You
   can drag elements and move sliders while recording, or play the sweep once over the video.
 - **Elements** menu: every element with its parameters, each with Edit and Delete.
+- **Edit** menu: Undo (Ctrl+Z) and Redo (Ctrl+Y / Ctrl+Shift+Z) of every change to the elements
+  and dye rakes. A whole drag, slider move or sweep is one step.
 - **Examples** menu: the scenes in `examples/` (cylinder, lifting cylinder, Rankine bodies, corner
   flow, ...) built into the exe; one click loads the elements, view and plot settings.
 - **File** menu: New, Open, Save, Save As (JSON scenes, see `examples/`), Clear All, and exports:
@@ -150,7 +152,7 @@ As a final check, copy the exe alone into an empty folder on another PC and doub
 
 ```
 src/core/     pure math/physics (no OpenGL/ImGui): flow elements, superposition, wall images,
-              scene model and warnings, RK4 streamlines, tracer particles
+              scene model and warnings, undo history, RK4 streamlines, tracer particles
 src/render/   OpenGL wrappers: shaders (with error logs), buffers, framebuffer, particle layer
 src/ui/       ImGui/ImPlot: menus, toolbar, parameter dialog, plot view, status bar
 src/io/       JSON scene save/load (nlohmann/json), built-in example scenes, CSV exports

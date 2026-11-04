@@ -1,7 +1,8 @@
-// main_menu.hpp: the application's main menu bar (File, Examples, Elements, View, Verify) and its shortcuts.
+// main_menu.hpp: the application's main menu bar (File, Edit, Examples, Elements, View, Verify) and its shortcuts.
 //
 // File: New, Open, Save, Save As, the image and CSV exports, Record animation (or Stop recording),
-// Clear All, Quit (and Reload shaders in Debug builds). Examples: the built-in example scenes
+// Clear All, Quit (and Reload shaders in Debug builds). Edit: Undo (Ctrl+Z) and Redo (Ctrl+Y or
+// Ctrl+Shift+Z) of element and dye-rake edits (core/history.hpp). Examples: the built-in example scenes
 // (io/examples.hpp), each loaded with one click. Elements: see elements_menu.hpp. View: the
 // Parameters panel, reset the view and the plot settings that are saved with the scene (streamline
 // density, arrows, wall images, equipotentials, |V| or Cp background, surface pressure, stagnation
@@ -28,6 +29,8 @@ struct RecordingProgress {
 struct MainMenuState {
     bool canReloadShaders = false; // Debug builds reading shaders from disk (Ctrl+R)
     bool parameterPanel = false;   // View → Parameters is ticked
+    bool canUndo = false;
+    bool canRedo = false;
     std::optional<RecordingProgress> recording;
     std::string notice;
 };
@@ -37,6 +40,8 @@ struct MainMenuActions {
     bool open = false;
     bool save = false;
     bool saveAs = false;
+    bool undo = false;
+    bool redo = false;
     bool exportImage = false;
     bool exportField = false;
     bool exportLines = false;

@@ -17,7 +17,7 @@ The window has four parts:
 |---|---|
 | Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below them, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
-| Menu bar (top) | **File** (including exports), **Examples**, **Elements**, **View** and **Verify** menus. |
+| Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View** and **Verify** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
 
 ## The flow view
@@ -58,6 +58,16 @@ yellow warning appears before you apply.
 To change or remove an element later, open the **Elements** menu: every element is listed with
 its parameters; hover one and choose **Edit...** or **Delete**. **Delete all** (or **File → Clear
 All**) removes every element but keeps the view.
+
+### Undo and redo
+
+**Edit → Undo** (Ctrl+Z) takes back the last change to the elements or dye rakes: an element
+added, edited, moved or deleted, a parameter slider moved, a sweep played, a rake drawn, moved or
+removed, Clear All. **Edit → Redo** (Ctrl+Y or Ctrl+Shift+Z) puts it back. A whole drag or slider
+move is one step, however long it lasts, and so is a sweep from Play to Stop (undo stops a playing
+sweep). Making a new change after an undo ends the redo list. The view and the View-menu settings
+are not part of the history, so undo never moves the plot. The last 200 steps are kept; opening a
+file or example, or File → New, starts a new history.
 
 ## Streamlines, equipotentials, contours and tracer particles
 
