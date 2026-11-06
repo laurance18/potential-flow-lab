@@ -261,6 +261,10 @@ private:
     std::vector<Vec2> m_stagnationPoints;
     std::optional<Rect> m_streamlineView;
     bool m_streamlinesDirty = true;
+    // Live changes and pans start from the lines shown (core/streamline.hpp); a new scene, a finished
+    // edit or a new separation (zoom, density) seeds them afresh.
+    bool m_freshStreamlines = true;
+    double m_streamlineSeparation = 0.0;
 
     // Tracer particles.
     ParticleSystem m_particles{k_particleCount};
@@ -764,6 +768,7 @@ void App::rebuildModel(bool live) {
     m_warnings = sceneWarnings(m_scene, m_model);
     m_streamlinesDirty = true;
     if (live) return;
+    m_freshStreamlines = true;
     m_respawnParticles = true;
     m_trailRenderer->clear();
 }
@@ -864,6 +869,13 @@ void App::updateStreamlines() {
     if (!m_streamlinesDirty && m_streamlineView == view) return;
 
     m_referenceSpeed = typicalSpeed(m_model.field, view);
+    const double separation = view.size().y / std::max(m_scene.plot.streamlineDensity, 1);
+    const bool keepLines = !m_freshStreamlines && std::abs(separation - m_streamlineSeparation) <= 1e-9 * separation;
+    const std::vector<StreamlineSeed> lineSeeds = keepLines ? std::move(m_streamlines.seeds) : std::vector<StreamlineSeed>{};
+    const std::vector<StreamlineSeed> equipotentialSeeds =
+        keepLines ? std::move(m_equipotentials.seeds) : std::vector<StreamlineSeed>{};
+    m_freshStreamlines = false;
+    m_streamlineSeparation = separation;
     m_streamlines = {};
     m_equipotentials = {};
     m_contours = {};
@@ -873,17 +885,17 @@ void App::updateStreamlines() {
         const double worldPerPixel = view.size().x / m_plot.pixelSize.x;
         StreamlineSettings settings;
         settings.bounds = view.expanded(k_streamlineMargin);
-        settings.separation = view.size().y / std::max(m_scene.plot.streamlineDensity, 1);
+        settings.separation = separation;
         settings.singularRadius = k_singularRadiusPx * worldPerPixel;
         settings.arrowSpacing = m_scene.plot.arrowSpacingPx * uiScale() * worldPerPixel;
-        m_streamlines = computeStreamlines(m_model.field, settings);
+        m_streamlines = computeStreamlines(m_model.field, settings, lineSeeds);
 
         if (m_scene.plot.showEquipotentials) {
             // Same spacing as the streamlines, so where the speed is typical the two families form
             // roughly square cells (a flow net).
             settings.orthogonal = true;
             settings.arrowSpacing = 0.0;
-            m_equipotentials = computeStreamlines(m_model.field, settings);
+            m_equipotentials = computeStreamlines(m_model.field, settings, equipotentialSeeds);
         }
         const double freeStream = m_model.freeStreamSpeed;
         const PressureScale pressure = freeStream > 0.0 ? pressureScale(m_referenceSpeed, freeStream) : PressureScale{};

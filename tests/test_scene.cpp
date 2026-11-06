@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <numbers>
 #include <sstream>
 #include <string>
@@ -128,6 +129,113 @@ TEST_CASE("streamlines of a vortex are closed circles") {
         if (line.front() == line.back() && line.size() > 10) ++closedCircles;
     }
     CHECK(closedCircles >= 3);
+}
+
+namespace {
+
+double nearestSquared(const StreamlineSet& set, Vec2 p) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto& line : set.lines) {
+        for (const Vec2 q : line) best = std::min(best, lengthSquared(q - p));
+    }
+    return best;
+}
+
+// Fraction of a's arrows with no arrow of b within `tolerance`.
+double arrowsMoved(const StreamlineSet& a, const StreamlineSet& b, double tolerance) {
+    std::size_t moved = 0;
+    for (const Arrow& x : a.arrows) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const Arrow& y : b.arrows) best = std::min(best, lengthSquared(x.position - y.position));
+        if (best > tolerance * tolerance) ++moved;
+    }
+    return a.arrows.empty() ? 0.0 : static_cast<double>(moved) / static_cast<double>(a.arrows.size());
+}
+
+// Fraction of a's line points with no point of b within `tolerance`.
+double linesMoved(const StreamlineSet& a, const StreamlineSet& b, double tolerance) {
+    std::size_t moved = 0;
+    std::size_t total = 0;
+    for (const auto& line : a.lines) {
+        for (std::size_t i = 0; i < line.size(); i += 3) {
+            ++total;
+            if (nearestSquared(b, line[i]) > tolerance * tolerance) ++moved;
+        }
+    }
+    return total == 0 ? 0.0 : static_cast<double>(moved) / static_cast<double>(total);
+}
+
+FlowField liftingCylinder(double circulation) {
+    return {.elements = {UniformFlow{.speed = 1.0}, Doublet{.strength = 1.0}, Vortex{.circulation = circulation}}};
+}
+
+StreamlineSettings plotLikeSettings() {
+    StreamlineSettings settings;
+    settings.bounds = {{-4.05, -2.55}, {4.05, 2.55}};
+    settings.separation = 5.0 / 24.0;
+    settings.singularRadius = 0.02;
+    settings.arrowSpacing = 0.7;
+    return settings;
+}
+
+} // namespace
+
+TEST_CASE("streamlines from a set's own seeds, in the same flow, draw the same picture") {
+    const FlowField field = liftingCylinder(5.0);
+    const StreamlineSettings settings = plotLikeSettings();
+    const StreamlineSet first = computeStreamlines(field, settings);
+    REQUIRE(first.seeds.size() == first.lines.size());
+    const StreamlineSet again = computeStreamlines(field, settings, first.seeds);
+    // Every line and arrow comes back, traced from near the middle of the line now, so the points
+    // differ by RK4 truncation at most.
+    CHECK(linesMoved(first, again, 1e-3 * settings.separation) < 0.005);
+    CHECK(arrowsMoved(first, again, 1e-3 * settings.separation) < 0.01);
+    // Seeds need a little less room when following lines, so a few gaps may get a line.
+    CHECK(linesMoved(again, first, 1e-3 * settings.separation) < 0.02);
+    CHECK(arrowsMoved(again, first, 1e-3 * settings.separation) < 0.03);
+}
+
+TEST_CASE("with the previous seeds, streamlines and arrows follow a sweep smoothly") {
+    // A lifting-cylinder sweep as the plot draws it, about one frame's change of circulation at a time.
+    const StreamlineSettings settings = plotLikeSettings();
+    const double tolerance = 0.5 * settings.separation;
+    StreamlineSet kept = computeStreamlines(liftingCylinder(3.0), settings);
+    StreamlineSet fresh = kept;
+    double keptArrows = 0.0, freshArrows = 0.0, keptLines = 0.0;
+    constexpr int frames = 30;
+    for (int k = 1; k <= frames; ++k) {
+        const FlowField field = liftingCylinder(3.0 + 0.042 * k);
+        StreamlineSet nextKept = computeStreamlines(field, settings, kept.seeds);
+        StreamlineSet nextFresh = computeStreamlines(field, settings);
+        keptArrows += arrowsMoved(nextKept, kept, tolerance) / frames;
+        freshArrows += arrowsMoved(nextFresh, fresh, tolerance) / frames;
+        keptLines += linesMoved(nextKept, kept, 0.5 * tolerance) / frames;
+        kept = std::move(nextKept);
+        fresh = std::move(nextFresh);
+    }
+    INFO("arrows jumping per frame: " << keptArrows << " with the seeds, " << freshArrows << " seeded afresh");
+    CHECK(keptArrows < 0.05);
+    CHECK(keptArrows < 0.25 * freshArrows);
+    CHECK(keptLines < 0.03);
+}
+
+TEST_CASE("arrows stay at the same place on a line when its ends move") {
+    // Panning a uniform flow: the lines through the kept seeds are the same, only longer or shorter.
+    const FlowField field{.elements = {UniformFlow{.speed = 1.0}}};
+    StreamlineSettings settings;
+    settings.bounds = {{-2.0, -2.0}, {2.0, 2.0}};
+    settings.separation = 0.25;
+    settings.arrowSpacing = 0.6;
+    const StreamlineSet before = computeStreamlines(field, settings);
+    settings.bounds = {{-1.63, -2.0}, {2.37, 2.0}};
+    const StreamlineSet after = computeStreamlines(field, settings, before.seeds);
+
+    StreamlineSet inside; // the arrows of `before` away from both views' ends
+    for (const Arrow& a : before.arrows) {
+        if (a.position.x > -1.4 && a.position.x < 1.8) inside.arrows.push_back(a);
+    }
+    REQUIRE(inside.arrows.size() > 20);
+    CHECK(arrowsMoved(inside, after, 1e-9) == 0.0);
 }
 
 TEST_CASE("streamlines stay inside a sector's wedge") {

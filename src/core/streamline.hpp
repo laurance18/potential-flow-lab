@@ -13,11 +13,22 @@
 // cross every streamline at right angles, and since grad phi = v is normal to them, phi is constant
 // along each: they are the equipotential lines. Tracing them (rather than contouring phi) avoids the
 // branch cut of phi around a vortex, where phi is multivalued.
+//
+// Live changes (a sweep, a slider, a drag, a pan) recompute the lines every frame. Seeded from
+// scratch, a tiny change in the field changes which seeds find room, and that cascades through the
+// picture: lines pop in and out from frame to frame. So the set records each line's seed, and the
+// next computation can start from those seeds first, in the same order. A line through the same
+// seed in a slightly different field moves only slightly. Seeds then need a little less free space,
+// and a kept seed crowded by the lines before it slides along its own streamline to where there is
+// room, so the same line stays; lines appear or vanish mostly where the flow stretches or really
+// changes shape. Each seed is recorded near the middle of its line, away from the ends. Arrows are placed at fixed arc-length steps from the line's seed, with
+// an offset kept with the seed, so they move with their line instead of jumping along it.
 #pragma once
 
 #include "core/flow_field.hpp"
 #include "core/vec2.hpp"
 
+#include <span>
 #include <vector>
 
 namespace pfl {
@@ -36,11 +47,20 @@ struct Arrow {
     Vec2 direction; // unit vector along the flow
 };
 
+struct StreamlineSeed {
+    Vec2 position;
+    double arrowPhase = 0.0; // offset of the line's arrows from the seed, a fraction of arrowSpacing
+};
+
 struct StreamlineSet {
     std::vector<std::vector<Vec2>> lines; // each ordered in the flow direction
     std::vector<Arrow> arrows;
+    std::vector<StreamlineSeed> seeds; // seeds[i] started lines[i]
 };
 
-StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSettings& settings);
+// `previousSeeds`: the seeds of the lines shown before (with the same separation), tried first so
+// the picture changes smoothly; empty to seed from scratch.
+StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSettings& settings,
+                                 std::span<const StreamlineSeed> previousSeeds = {});
 
 } // namespace pfl
