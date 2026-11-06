@@ -1,5 +1,6 @@
 ﻿#include "core/scene.hpp"
 #include "core/verification.hpp"
+#include "io/verification_checks.hpp"
 
 #include <doctest/doctest.h>
 
@@ -11,7 +12,7 @@ using namespace pfl;
 
 // The checks behind Verify → Physics checks must all pass, or the app would show a failure.
 TEST_CASE("every physics check in the Verify window passes") {
-    for (const VerificationCheck& check : verificationChecks()) {
+    for (const VerificationCheck& check : allVerificationChecks()) {
         const VerificationResult result = check.run();
         INFO(check.group << " / " << check.title << ": error " << result.error << ", tolerance " << result.tolerance
                          << ", " << result.samples << " samples. " << result.note);
@@ -26,7 +27,7 @@ TEST_CASE("every physics check in the Verify window passes") {
 
 TEST_CASE("physics checks: unique titles, and every one shows a valid scene") {
     std::set<std::string> titles;
-    for (const VerificationCheck& check : verificationChecks()) {
+    for (const VerificationCheck& check : allVerificationChecks()) {
         INFO(check.title);
         CHECK(titles.insert(check.title).second);
         const Scene scene = check.scene();

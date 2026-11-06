@@ -2,6 +2,7 @@
 #include "ui/verification_window.hpp"
 
 #include "core/flow_field.hpp"
+#include "io/verification_checks.hpp"
 #include "ui/style.hpp"
 
 #include <algorithm>
@@ -162,7 +163,7 @@ void wrappedDim(const std::string& text) {
 
 } // namespace
 
-VerificationWindow::VerificationWindow() : m_entries(verificationChecks().size()), m_current(m_entries.size()) {}
+VerificationWindow::VerificationWindow() : m_entries(allVerificationChecks().size()), m_current(m_entries.size()) {}
 
 // A check still running finishes first (the future's destructor waits); none takes long.
 VerificationWindow::~VerificationWindow() = default;
@@ -193,7 +194,7 @@ void VerificationWindow::launch(std::size_t index, double now) {
     m_current = index;
     m_checkStartedAt = now;
     m_followRunning = true;
-    m_pending = std::async(std::launch::async, verificationChecks()[index].run);
+    m_pending = std::async(std::launch::async, allVerificationChecks()[index].run);
 }
 
 void VerificationWindow::poll(double now) {
@@ -379,7 +380,7 @@ void VerificationWindow::drawBadge(ImDrawList* dl, ImVec2 centre, float radius, 
 
 void VerificationWindow::drawSummary(double now) {
     const float s = uiScale();
-    const std::span<const VerificationCheck> checks = verificationChecks();
+    const std::span<const VerificationCheck> checks = allVerificationChecks();
     const int total = static_cast<int>(m_entries.size());
     const int passed = passedCount();
     const bool done = complete() && !running();
@@ -457,7 +458,7 @@ std::optional<VerificationShow> VerificationWindow::drawChecks(double now) {
         return show;
     }
     const float s = uiScale();
-    const std::span<const VerificationCheck> checks = verificationChecks();
+    const std::span<const VerificationCheck> checks = allVerificationChecks();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float rowHeight = 1.3f * ImGui::GetFrameHeight();
     const float meterWidth = 130.0f * s;
@@ -556,7 +557,7 @@ std::optional<VerificationShow> VerificationWindow::drawChecks(double now) {
 
 std::optional<VerificationShow> VerificationWindow::drawDetails(std::size_t index) {
     const float s = uiScale();
-    const VerificationCheck& check = verificationChecks()[index];
+    const VerificationCheck& check = allVerificationChecks()[index];
     const VerificationResult& r = *m_entries[index].result;
     std::optional<VerificationShow> show;
 
@@ -605,7 +606,7 @@ std::optional<VerificationShow> VerificationWindow::drawDetails(std::size_t inde
 }
 
 std::string VerificationWindow::report() const {
-    const std::span<const VerificationCheck> checks = verificationChecks();
+    const std::span<const VerificationCheck> checks = allVerificationChecks();
     std::string out = std::format("Potential Flow Lab: physics verification\n{} of {} checks passed.\n", passedCount(),
                                   m_entries.size());
     for (std::size_t i = 0; i < checks.size(); ++i) {

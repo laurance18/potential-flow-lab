@@ -256,7 +256,7 @@ which `tools/report_figures.py` uses to produce every figure and number in Secti
 
 ## 6. Verification
 
-The unit-test suite (doctest, 35 test cases, 8721 assertions, all passing) covers each minimum
+The unit-test suite (doctest, 80 test cases, about 1.4 million assertions, all passing) covers each minimum
 verification case of the brief. The script `tools/report_figures.py` adds an independent check. It
 exports the program's field on a 201 × 117 grid and compares it with the classical closed-form
 solutions, written in polar form in Python without reference to the program's complex-potential
@@ -271,6 +271,16 @@ code.
 | Symmetry wall | max \|v·n\| / \|V\| along the wall, 200 samples | 1.9 × 10⁻¹⁶ (inclined wall with every element type); 2.1 × 10⁻¹⁶ and 1.2 × 10⁻¹⁶ (two perpendicular walls) |
 | Channel (two parallel walls) | source: every grid node against the row sum in real form; every element type at 25°: 128 points against a direct sum over 8,190 copies of each; max \|v·n\| / \|V\| on both walls, 200 samples each | 6.1 × 10⁻¹⁶ (grid); 1.4 × 10⁻¹¹ (direct sum, its own remainder); walls 3.4 × 10⁻¹⁶ (source) and 8.5 × 10⁻¹⁶ (every element type) |
 | Save, reopen | all six element types plus plot settings, saved and reloaded | identical element list and settings, identical velocities; all 10 example scenes load |
+
+The same cases also run inside the program. **Verify → Physics checks** runs 44 checks in eight
+groups and shows each error against its tolerance, with the program's numbers beside theory. Besides
+the elementary flows and the brief's five cases (including saving a scene to a file and reopening
+it), they cover results the rest of the program relies on: the force from Blasius' theorem on a
+circle around the body, which needs no traced surface; a 60° corner against the conformal map ζ = z³,
+which needs no images; ψ along traced streamlines and dividing streamlines; the even spacing of the
+lines; and particles and dye against exact orbits. To confirm that the checks can fail, 15 deliberate
+faults were put into the code one at a time (for example a vortex image of the wrong sign, or arrows
+reversed): the checks catch every one.
 
 Further tests check that W = dF/dz numerically for every element type, and that the sector walls
 carry zero normal velocity. For the equipotentials, φ varies by less than 10⁻⁴ of the line spacing

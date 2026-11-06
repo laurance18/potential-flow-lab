@@ -283,24 +283,27 @@ PotentialFlowLab.exe examples\lifting_cylinder.json --export-video lifting_cylin
 ## Verifying the physics
 
 **Verify → Physics checks...** (F5) tests the program against potential-flow theory, in front of
-you. Each of the 22 checks builds a flow with the program's own code and compares it with the exact
-result, written out separately in polar form, without using the program's equations. The checks
-are in six groups:
+you. Each of the 44 checks runs the program's own code and compares the result with the exact one,
+written out separately, mostly in polar form, without using the program's equations. The checks are
+in eight groups:
 
 | Group | What is checked |
 |---|---|
-| Foundations | div V = 0 and curl V = 0 (Laplace), W = dF/dz for every element, and the flux and circulation around closed curves |
+| Foundations | div V = 0 and curl V = 0 (Laplace), W = dF/dz for every element, flux and circulation around closed curves, the sum of every element, finite velocity at singular points, turned and mirrored scenes, φ and ψ as integrals of V, and Bernoulli against Euler's equation |
 | Elementary flows | Uniform flow, source and sink, vortex, doublet, corner flow and plate edge, at every node of a 201 × 117 grid |
-| Superposition and bodies | Cylinder with and without circulation, its stagnation points, the Rankine oval and half-body (ψ along the traced surface), a source near a wall |
-| Symmetry walls | No flow through an inclined wall, two perpendicular walls or a channel, and the channel's closed form against its series of images |
-| Pressure and forces | Cp on the cylinder, d'Alembert's paradox, Kutta–Joukowski lift |
-| Streamlines and equipotentials | Vortex streamlines are circles, and equipotentials cross the streamlines at 90° |
+| Superposition and bodies | Cylinder with and without circulation, its stagnation points on and off the surface, dividing streamlines, the Rankine oval and half-body (ψ along the traced surface), a source near a wall |
+| Symmetry walls | No flow through an inclined wall, two perpendicular walls or a channel, the channel's closed form against its series of images, a 60° corner against its conformal map, and a vortex in a channel |
+| Pressure and forces | Cp on the cylinder and the Rankine bodies, d'Alembert's paradox, Kutta–Joukowski lift, forces from the far field (Blasius), and forces along a parameter sweep |
+| Streamlines and equipotentials | Straight lines in a uniform flow, rays from a source or sink, circles around a vortex in the right direction, ψ constant along streamlines, even spacing, arrows along the flow, and equipotentials at 90° to the streamlines |
+| Particles and dye | Tracer particles against the exact orbit around a vortex and against ψ past a cylinder; dye against ψ and the spacing V∞Δt |
+| Saving and reopening | A scene with every kind of element saved to a file and reopened: every parameter, the rakes, the plot settings and the streamlines come back |
 
 The checks run one after another, and each turns into a green tick when it passes (red cross if
 not). The bar beside it shows −log₁₀ of the error, about how many digits agree with theory, and
 the white tick on the bar marks the tolerance. Where both sides are exact formulas, only rounding
-separates them, so the tolerance is 10⁻¹². Checks that trace a surface, integrate a force or
-differentiate numerically are only as accurate as that step, and their tolerances are looser.
+separates them, so the tolerance is 10⁻¹². Checks that trace a surface, integrate a force,
+differentiate numerically or move particles are only as accurate as that step, and their tolerances
+are looser.
 
 Click a check to open it. You see what theory says, how the program was tested, the program's
 numbers next to the exact ones, the error and the tolerance. **Show in plot** loads that flow into
