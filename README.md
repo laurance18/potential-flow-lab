@@ -34,9 +34,9 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   run from the command line.
 - **View** menu: streamline density, arrows, wall images, equipotential lines, a |V| or Cp
   background, surface pressure, stagnation point markers, tracer particles.
-- **Verify** menu (F5): 22 physics checks run in front of you. Each compares the program with an
+- **Verify** menu (F5): 24 physics checks run in front of you. Each compares the program with an
   exact result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine
-  bodies, wall images, surface Cp, d'Alembert and Kutta–Joukowski. Each check shows its error
+  bodies, wall and channel images, surface Cp, d'Alembert and Kutta–Joukowski. Each check shows its error
   against its tolerance and the program's numbers beside theory, and can load its flow into the plot.
 - **Surface pressure**: the bodies (cylinder, Rankine oval, half-body, ...) are found from their
   stagnation points; their surfaces are coloured by Cp with pressure arrows, and a side panel plots

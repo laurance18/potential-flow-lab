@@ -110,10 +110,31 @@ therefore a streamline. For each element this gives:
 
 With several walls, every copy is reflected again across every wall until no new copy appears.
 For one wall, or two walls meeting at π/k, this closes after a finite number of images and the
-condition is exact. For other cases, such as two parallel walls (an infinite row of images), the
-series is truncated at 32 images per element and the program warns that the wall condition is
-approximate. The status bar always shows a live numerical check: the largest |v·n| sampled along
-each wall in view, divided by the largest speed there.
+condition is exact.
+
+Two parallel walls a distance h apart (a channel) never close: every element and its mirror image
+repeat every T = 2h **n**, with **n** the wall normal, in two infinite rows. Direct sums over a row
+converge only as 1/N, but each row has a closed form, with k = iπ/T:
+
+$$\sum_{n=-\infty}^{\infty} \frac{1}{z - z_0 - nT} = k \coth k(z - z_0), \qquad
+\sum_{n=-\infty}^{\infty} \frac{1}{(z - z_0 - nT)^2} = k^2 \operatorname{csch}^2 k(z - z_0),$$
+
+the first as the limit of symmetric partial sums. A row is therefore the element's own W and F with
+1/ζ, 1/ζ² and log ζ replaced by k coth kζ, k² csch² kζ and log sinh kζ. In coordinates ζ along the
+channel, with the walls at Im ζ = 0 and h, a source is
+
+$$W = \frac{\Lambda}{4h}\left[\coth\frac{\pi(\zeta - \zeta_0)}{2h} +
+\coth\frac{\pi(\zeta - \bar\zeta_0)}{2h}\right],$$
+
+real on both walls, so v = 0 there exactly. Half of the source's flow leaves each way, at speed
+Λ/2h far from it. An element on a wall that is its own image has one row, so a source there keeps
+the strength it has at a single wall. Inside the channel F has one branch cut, along the channel
+from the element, as for a free source.
+
+Other layouts with no closed image system, such as three parallel walls, are truncated at 32 images
+per element and the program warns that the wall condition is approximate. The status bar always
+shows a live numerical check: the largest |v·n| sampled along each wall in view, divided by the
+largest speed there.
 
 ### 3.2 Sector flow: admissible domain and interaction with other elements
 
@@ -248,7 +269,8 @@ code.
 | Uniform flow + doublet (cylinder) | V∞ = 1, μ = 1: velocity at (0, a); V_r on r = a for α = 30°; Cp along x = 0 | (2, 0); V_r = 0 and V_θ = −2V∞ sin(θ − α); Fig. 1 |
 | Cylinder with circulation | Γ = 2π: velocity at (0, a); stagnation points | (3, 0); stagnation at 210° and 330° (sin θ = −Γ/4πV∞a) |
 | Symmetry wall | max \|v·n\| / \|V\| along the wall, 200 samples | 1.9 × 10⁻¹⁶ (inclined wall with every element type); 2.1 × 10⁻¹⁶ and 1.2 × 10⁻¹⁶ (two perpendicular walls) |
-| Save, reopen | all six element types plus plot settings, saved and reloaded | identical element list and settings, identical velocities; all 9 example scenes load |
+| Channel (two parallel walls) | source: every grid node against the row sum in real form; every element type at 25°: 128 points against a direct sum over 8,190 copies of each; max \|v·n\| / \|V\| on both walls, 200 samples each | 6.1 × 10⁻¹⁶ (grid); 1.4 × 10⁻¹¹ (direct sum, its own remainder); walls 3.4 × 10⁻¹⁶ (source) and 8.5 × 10⁻¹⁶ (every element type) |
+| Save, reopen | all six element types plus plot settings, saved and reloaded | identical element list and settings, identical velocities; all 10 example scenes load |
 
 Further tests check that W = dF/dz numerically for every element type, and that the sector walls
 carry zero normal velocity. For the equipotentials, φ varies by less than 10⁻⁴ of the line spacing
@@ -347,7 +369,7 @@ two stagnation points, whose net effect is the lift L′/q∞ = 4π.*
 - Body surfaces are found through their stagnation points. A cylinder with Γ > 4πaV∞ has its only
   stagnation point off the surface, so the body found is the dividing-streamline loop around it
   (same forces). Bodies with more than two stagnation points on the surface are not assembled.
-- Walls that do not close the image system (parallel walls, or angles other than π/k) are
+- Walls that do not close the image system (three parallel walls, or angles other than π/k) are
   approximated with 32 images per element, and the program warns when this happens.
 - The sector walls are streamlines of the sector term only, not of the superposed flow
   (Section 3.2). This is the defined behaviour, not a numerical error.

@@ -26,6 +26,54 @@ void checkVelocity(const FlowField& field, Vec2 p, Vec2 expected) {
 } // namespace
 
 // Section 5 of the reference equations (V_inf = 1, a = 1).
+TEST_CASE("periodic rows: the closed form is the limit of the series, dF/dz is W, and nothing overflows") {
+    const Vec2 period = Vec2{-0.8, 1.7} * 1.5;
+    const FlowElement elements[] = {SourceSink{.strength = 1.7, .position = {0.2, -0.3}},
+                                    Vortex{.circulation = -2.3, .position = {0.2, -0.3}},
+                                    Doublet{.strength = 0.9, .position = {0.2, -0.3}, .angle = 50.0 * deg}};
+    for (const FlowElement& element : elements) {
+        const PeriodicRow row{.element = element, .period = period};
+
+        // Partial sums approach the limit as c / (N + 1/2), so two of them cancel c.
+        const Vec2 p{1.1, 0.4};
+        constexpr int n1 = 2000;
+        constexpr int n2 = 4000;
+        Complex total = complexVelocity(element, p);
+        Complex first{};
+        for (int n = 1; n <= n2; ++n) {
+            total += complexVelocity(translated(element, period * n), p) + complexVelocity(translated(element, period * -n), p);
+            if (n == n1) first = total;
+        }
+        const Complex limit = (total * (n2 + 0.5) - first * (n1 + 0.5)) / (n2 - n1 + 0.0);
+        CHECK(std::abs(complexVelocity(row, p) - limit) < 1e-8);
+
+        // Close to any copy the row is that element, plus the smooth field of the others.
+        const Vec2 centre = Vec2{0.2, -0.3} + period * 3.0;
+        CHECK(length(nearestCopy(row, centre + period * 0.4) - centre) < 1e-12);
+        const Vec2 near = centre + Vec2{1e-4, 1e-4};
+        CHECK(std::abs(complexVelocity(row, near) - complexVelocity(translated(element, period * 3.0), near)) < 5.0);
+
+        // Along the row direction it repeats; at right angles it stays finite to any distance.
+        const Vec2 along = perp(period) * 2.0;
+        for (const double distance : {0.3, 1.0, 5.0, 19.0, 21.0, 40.0, 1e4}) {
+            for (const double side : {1.0, -1.0}) {
+                const Vec2 q = Vec2{0.2, -0.3} + along * (side * distance) + period * 0.3;
+                const double h = 1e-5;
+                const Complex dFdx = (complexPotential(row, q + Vec2{h, 0.0}) - complexPotential(row, q - Vec2{h, 0.0})) / (2.0 * h);
+                const Complex dFdy = (complexPotential(row, q + Vec2{0.0, h}) - complexPotential(row, q - Vec2{0.0, h})) / (2.0 * h);
+                const Complex w = complexVelocity(row, q);
+                INFO("distance " << distance << ", side " << side);
+                REQUIRE(std::isfinite(std::abs(w)));
+                // At huge distances the potential is too large for the difference to resolve W.
+                const double tolerance = distance > 100.0 ? 1e-3 : 1e-7;
+                CHECK(std::abs(dFdx - w) < tolerance);
+                CHECK(std::abs(dFdy - Complex{0.0, 1.0} * w) < tolerance);
+                CHECK(std::abs(complexVelocity(row, q + period * 3.0) - w) < 1e-9 * (1.0 + std::abs(w)));
+            }
+        }
+    }
+}
+
 TEST_CASE("reference unit-test values") {
     checkVelocity({.elements = {UniformFlow{.speed = 1.0, .angle = 45.0 * deg}}}, {3.0, -2.0}, {0.707107, 0.707107});
 

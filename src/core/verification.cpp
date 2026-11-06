@@ -285,6 +285,18 @@ Scene cornerWallsScene() {
     return {.elements = {Vortex{.circulation = 1.0, .position = {1.0, 2.0}}, SymmetryWall{},
                          SymmetryWall{.angle = 90.0 * deg}}};
 }
+Scene channelSourceScene() {
+    return {.elements = {SourceSink{.strength = 2.0 * pi, .position = {0.0, 0.4}}, SymmetryWall{.point = {0.0, -1.0}},
+                         SymmetryWall{.point = {0.0, 1.0}}}};
+}
+Scene inclinedChannelScene() {
+    const SymmetryWall lower{.point = {0.3, -0.8}, .angle = 25.0 * deg};
+    return {.elements = {UniformFlow{.speed = 1.0, .angle = 10.0 * deg},
+                         SourceSink{.strength = 4.0, .position = {1.0, 0.0}},
+                         Vortex{.circulation = -3.0, .position = {-1.5, -0.5}},
+                         Doublet{.strength = 0.7, .position = {0.5, 0.9}, .angle = 70.0 * deg}, lower,
+                         SymmetryWall{.point = lower.point + lower.normal() * 2.0, .angle = lower.angle}}};
+}
 Scene surfacePressureScene() {
     return withPlot(liftingCylinderScene(), [](PlotSettings& p) { p.showSurfacePressure = true; });
 }
@@ -720,6 +732,119 @@ VerificationResult cornerWalls() {
     return finish(std::move(r));
 }
 
+// Velocity of one row of sources Λ at (x0, y0 + 2hn), n over all integers, summed by hand:
+// u = Λ/4h sinh 2X / D, v = Λ/4h sin 2Y / D, X = π(x − x0)/2h, Y = π(y − y0)/2h, with
+// D = cosh 2X − cos 2Y = 2 (sinh²X + sin²Y), which keeps its digits next to the source.
+Vec2 exactSourceRow(double strength, double h, Vec2 centre, Vec2 p) {
+    const double x = pi * (p.x - centre.x) / (2.0 * h);
+    const double y = pi * (p.y - centre.y) / (2.0 * h);
+    const double sx = std::sinh(x);
+    const double sy = std::sin(y);
+    const double scale = strength / (8.0 * h) / (sx * sx + sy * sy);
+    return {scale * std::sinh(2.0 * x), scale * std::sin(2.0 * y)};
+}
+
+VerificationResult channelSource() {
+    const Scene scene = channelSourceScene();
+    const FlowModel model = modelOf(scene);
+    const double h = 2.0;
+    const double strength = 2.0 * pi;
+    const Vec2 own{0.0, 0.4};
+    const Vec2 image{0.0, -2.4}; // across y = −1
+    const auto exact = [&](Vec2 p) {
+        return exactSourceRow(strength, h, own, p) + exactSourceRow(strength, h, image, p);
+    };
+    const GridStats g = compareGrid(model.field, [&](Vec2 p) {
+        return at(p, own) || at(p, image) || at(p, image + Vec2{0.0, 2.0 * h}) ? k_singular : value(exact(p));
+    });
+    int counted = 0;
+    const double lower = wallLeak(model.field, std::get<SymmetryWall>(scene.elements[1]), 200, counted);
+    const double upper = wallLeak(model.field, std::get<SymmetryWall>(scene.elements[2]), 200, counted);
+    const double far = length(model.field.velocity({30.0, 0.0}));
+    const double endSpeed = strength / (2.0 * h);
+    VerificationResult r = gridResult(g, {{"Speed at (30, 0)", std::format("{:.9f}", far),
+                                           std::format("Λ/2h = {:.9f}", endSpeed)},
+                                          {"max |v·n| / max |v| on y = −1", num(lower), "0"},
+                                          {"max |v·n| / max |v| on y = 1", num(upper), "0"},
+                                          velocityAt(model.field, {1.0, 0.0}, exact({1.0, 0.0}))});
+    r.error = std::max({r.error, lower, upper, std::abs(far - endSpeed) / endSpeed});
+    if (!model.imagesExact || model.field.rows.size() != 2) r.error = inf;
+    return finish(std::move(r));
+}
+
+VerificationResult inclinedChannel() {
+    const Scene scene = inclinedChannelScene();
+    const FlowModel model = modelOf(scene);
+    const SymmetryWall lower = std::get<SymmetryWall>(scene.elements[4]);
+    const SymmetryWall upper = std::get<SymmetryWall>(scene.elements[5]);
+    const Vec2 t = lower.direction();
+    const Vec2 n = lower.normal();
+    const double h = 2.0;
+    const double phi = 25.0 * deg;
+    const double stream = std::cos(15.0 * deg);
+
+    // Every copy in cell m of the row, written out with the polar forms: the element at z + 2hm n,
+    // its mirror image across the lower wall at the same distance on the other side.
+    const auto cell = [&](Vec2 p, int m) {
+        const Vec2 shift = n * (2.0 * h * m);
+        const auto across = [&](Vec2 q) { return q - n * (2.0 * dot(q - lower.point, n)); };
+        const Vec2 source{1.0, 0.0};
+        const Vec2 vortex{-1.5, -0.5};
+        const Vec2 doublet{0.5, 0.9};
+        const double beta = 70.0 * deg;
+        return exactSource(4.0, source + shift, p) + exactSource(4.0, across(source) + shift, p) +
+               exactVortex(-3.0, vortex + shift, p) + exactVortex(3.0, across(vortex) + shift, p) +
+               exactDoublet(0.7, beta, doublet + shift, p) +
+               exactDoublet(0.7, 2.0 * phi - beta, across(doublet) + shift, p);
+    };
+    // The partial sums over |m| <= N approach the limit as c / (N + 1/2), with the next term of order
+    // 1 / N^3, so two of them give the limit far more closely than either.
+    constexpr int shortSum = 1023;
+    constexpr int longSum = 2047;
+    const auto seriesSum = [&](Vec2 p) {
+        Vec2 total = cell(p, 0);
+        Vec2 first{};
+        for (int m = 1; m <= longSum; ++m) {
+            total += cell(p, m) + cell(p, -m);
+            if (m == shortSum) first = total;
+        }
+        return (total * (longSum + 0.5) - first * (shortSum + 0.5)) / static_cast<double>(longSum - shortSum);
+    };
+
+    VerificationResult r;
+    double worst = 0.0;
+    double scale = 0.0;
+    Vec2 sampleAt;
+    Vec2 sample;
+    for (int j = 0; j < 8; ++j) {
+        for (int i = 0; i < 16; ++i) {
+            const Vec2 p = lower.point + t * (-4.0 + 8.0 * (i + 0.5) / 16.0) + n * (h * (j + 0.5) / 8.0);
+            const Vec2 sum = seriesSum(p) + t * stream;
+            worst = std::max(worst, length(model.field.velocity(p) - sum));
+            scale = std::max(scale, length(sum));
+            sampleAt = p;
+            sample = sum;
+            ++r.samples;
+        }
+    }
+    const double series = worst / scale;
+    const double lowerLeak = wallLeak(model.field, lower, 200, r.samples);
+    const double upperLeak = wallLeak(model.field, upper, 200, r.samples);
+    r.error = std::max({series, lowerLeak, upperLeak, std::abs(model.freeStreamSpeed - stream)});
+    r.tolerance = 1e-7; // what is left of the series after extrapolating, not the closed form
+    r.errorLabel = "max |V − V_series| / max |V| in the channel, and |v·n| / max |v| on the walls";
+    r.comparisons = {{"max |v·n| / max |v| on the lower wall", num(lowerLeak), "0"},
+                     {"max |v·n| / max |v| on the upper wall", num(upperLeak), "0"},
+                     {"max |V − V_series| / max |V|", num(series), "0 (to the series' own accuracy)"},
+                     {"Rows of images", std::to_string(model.field.rows.size()), "6 (each element and its mirror)"},
+                     velocityAt(model.field, sampleAt, sample)};
+    r.note = std::format("{} copies of each element summed at {} points in a channel at 25°, 2 wide, with a uniform "
+                         "flow, a source, a vortex and a doublet, and 400 points along the walls.",
+                         count(2 * (2 * longSum + 1)), r.samples - 400);
+    if (!model.imagesExact || model.field.rows.size() != 6) r.error = inf;
+    return finish(std::move(r));
+}
+
 // --- Pressure and forces ----------------------------------------------------------------
 
 VerificationResult surfacePressure() {
@@ -953,6 +1078,17 @@ const VerificationCheck k_checks[] = {
     {k_walls, "Corner of two walls",
      "Two walls at 90° need three images (−Γ, −Γ, +Γ for a vortex), and then close exactly.",
      "Compare the field with the four-vortex solution and sample v·n along both walls.", cornerWallsScene, cornerWalls},
+    {k_walls, "Source in a channel",
+     "Two parallel walls a distance h apart need two infinite rows of images, which sum to Λ/4h [coth π(z − z₀)/2h + "
+     "coth π(z − z̄₀)/2h]. Half of the source's flow leaves each way, at speed Λ/2h far down the channel.",
+     "Compare every node with the same sum in real form (sinh, cosh and sin only), the speed far down the channel, and "
+     "v·n along both walls.",
+     channelSourceScene, channelSource},
+    {k_walls, "Inclined channel, every element",
+     "The closed form of a channel is the limit of the series of images, for every kind of element.",
+     "A channel at 25° with a uniform flow, a source, a vortex and a doublet: compare the flow with the direct sum over "
+     "thousands of copies, and sample v·n along both walls.",
+     inclinedChannelScene, inclinedChannel},
 
     {k_forces, "Pressure on a cylinder",
      "Bernoulli: Cp = 1 − |V|²/V∞² = 1 − (2 sin θ + Γ / 2πaV∞)² on the cylinder: 1 at the stagnation points, −3 at the "

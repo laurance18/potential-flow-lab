@@ -72,9 +72,9 @@ bool insidePolygon(const std::vector<Vec2>& polygon, Vec2 p) {
 std::optional<Rect> bodyRegion(const FlowField& field, double freeStreamSpeed) {
     std::optional<Rect> box;
     double scale = 0.0;
-    for (const FlowElement& element : field.elements) {
+    const auto include = [&](const FlowElement& element) {
         const std::optional<Vec2> centre = singularPoint(element);
-        if (!centre) continue;
+        if (!centre) return;
         box = box ? Rect{{std::min(box->min.x, centre->x), std::min(box->min.y, centre->y)},
                          {std::max(box->max.x, centre->x), std::max(box->max.y, centre->y)}}
                   : Rect{*centre, *centre};
@@ -85,7 +85,9 @@ std::optional<Rect> bodyRegion(const FlowField& field, double freeStreamSpeed) {
         } else if (const auto* doublet = std::get_if<Doublet>(&element)) {
             scale = std::max(scale, std::sqrt(std::abs(doublet->strength) / freeStreamSpeed)); // cylinder radius
         }
-    }
+    };
+    for (const FlowElement& element : field.elements) include(element);
+    for (const PeriodicRow& row : field.rows) include(row.element); // the other copies repeat the same bodies
     if (!box) return std::nullopt;
     const Vec2 size = box->size();
     const double margin = 2.0 * scale + 0.1 * std::max(size.x, size.y);
@@ -329,6 +331,9 @@ std::vector<BodySurface> findBodySurfaces(const FlowModel& model, const Rect& vi
         for (const FlowElement& element : field.elements) {
             if (const std::optional<Vec2> c = singularPoint(element)) radius = std::min(radius, 0.25 * length(*c - stagnation[i]));
         }
+        for (const PeriodicRow& row : field.rows) {
+            radius = std::min(radius, 0.25 * length(nearestCopy(row, stagnation[i]) - stagnation[i]));
+        }
         for (const auto& [angle, outgoing] : branchDirections(field, stagnation[i], radius)) {
             branches[i].push_back(traceBranch(field, stagnation, i, angle, outgoing, radius, trace));
         }
@@ -412,6 +417,14 @@ BodyForces bodyForces(const BodySurface& body, const FlowModel& model) {
             forces.circulation += vortex->circulation;
         }
     }
+    // In a channel the body feels every other copy, and holds at most the nearest one of a row.
+    for (const PeriodicRow& row : model.field.rows) {
+        forces.isolated = false;
+        const auto* vortex = std::get_if<Vortex>(&row.element);
+        if (vortex != nullptr && insidePolygon(body.points, nearestCopy(row, body.points.front()))) {
+            forces.circulation += vortex->circulation;
+        }
+    }
     return forces;
 }
 
@@ -421,7 +434,7 @@ double CylinderReference::cp(double theta) const {
 }
 
 std::optional<CylinderReference> cylinderReference(const BodySurface& body, const FlowModel& model) {
-    if (!body.closed || !(model.freeStreamSpeed > 0.0)) return std::nullopt;
+    if (!body.closed || !(model.freeStreamSpeed > 0.0) || !model.field.rows.empty()) return std::nullopt;
     const Doublet* doublet = nullptr;
     const Vortex* vortex = nullptr;
     for (const FlowElement& element : model.field.elements) {

@@ -136,10 +136,11 @@ FlowModel buildFlowModel(const Scene& scene) {
             const UniformFlow constrained = constrainToWalls(*uniform, model.walls);
             freeStream += complexVelocity(constrained, {});
             model.field.elements.push_back(constrained);
-        } else {
-            model.field.elements.push_back(flow);
+        } else if (images.rows.empty() || !mirror(flow, model.walls.front())) {
+            model.field.elements.push_back(flow); // otherwise it is in its row
         }
     }
+    model.field.rows = std::move(images.rows);
     model.field.elements.insert(model.field.elements.end(), model.images.begin(), model.images.end());
     model.freeStream = velocityFromW(freeStream);
     model.freeStreamSpeed = std::abs(freeStream);
@@ -218,9 +219,27 @@ std::vector<std::string> sceneWarnings(const Scene& scene, const FlowModel& mode
     if (sectorCount > 1) {
         warnings.push_back("Several sector flows: the flow domain is the intersection of their wedges.");
     }
+    if (!model.field.rows.empty()) {
+        const Vec2 normal = model.walls.front().normal();
+        const auto offset = [&](Vec2 p) { return dot(p - model.walls.front().point, normal); };
+        double low = 0.0;
+        double high = 0.0;
+        for (const SymmetryWall& wall : model.walls) {
+            low = std::min(low, offset(wall.point));
+            high = std::max(high, offset(wall.point));
+        }
+        for (const Centre& c : centres) {
+            if (std::holds_alternative<SectorFlow>(elements[c.number - 1])) continue;
+            const double tolerance = k_coincidenceTolerance * (1.0 + length(c.point));
+            if (offset(c.point) >= low - tolerance && offset(c.point) <= high + tolerance) continue;
+            warnings.push_back(std::format("Element #{} lies outside the channel, so one of its images lies inside it "
+                                           "and acts as a real element there.",
+                                           c.number));
+        }
+    }
     if (!model.imagesExact) {
-        warnings.push_back("The walls do not form a closed image system (e.g. parallel walls or walls not meeting "
-                           "at 180°/k); the images were truncated, so the wall condition is approximate.");
+        warnings.push_back("The walls do not form a closed image system (e.g. three parallel walls, or walls not "
+                           "meeting at 180°/k); the images were truncated, so the wall condition is approximate.");
     }
     return warnings;
 }

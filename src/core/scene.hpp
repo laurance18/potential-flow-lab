@@ -74,7 +74,8 @@ struct Scene {
 
 struct FlowModel {
     FlowField field;                  // what is evaluated: flows (uniform ones constrained) + images
-    std::vector<FlowElement> images;  // the wall images on their own, for drawing
+    std::vector<FlowElement> images;  // the wall images on their own, for drawing (a channel has
+                                      // none: its images are in field.rows, see rowCopies())
     std::vector<SymmetryWall> walls;
     bool imagesExact = true;
     Vec2 freeStream;                  // sum of the constrained uniform flows

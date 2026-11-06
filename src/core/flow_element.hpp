@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace pfl {
 
@@ -85,6 +86,9 @@ inline Vec2 velocity(const FlowElement& element, Vec2 p) { return velocityFromW(
 // or the vertex of a sector flow opening wider than pi (n < 1). Uniform flow has none.
 std::optional<Vec2> singularPoint(const FlowElement& element);
 
+// `element` moved by `offset`. A uniform flow is unchanged.
+FlowElement translated(FlowElement element, Vec2 offset);
+
 // Angle of p around the sector vertex measured from the first wall, in [0, 2 pi).
 double sectorLocalAngle(const SectorFlow& sector, Vec2 p);
 
@@ -93,5 +97,31 @@ bool inElementDomain(const FlowElement& element, Vec2 p);
 
 // A message describing why the parameters are not physically valid, or nullopt if they are.
 std::optional<std::string> validationError(const FlowElement& element);
+
+// An infinite row of copies of a source, vortex or doublet, at z0 + n T for every integer n. The sum
+// over the row has a closed form, with k = i pi / T and w = k (z - z0):
+//     sum 1 / (z - z0 - n T)     = k coth w         (symmetric partial sums)
+//     sum 1 / (z - z0 - n T)^2   = k^2 csch^2 w
+// so a row is the element's own W and F with 1 / zeta -> k coth w, 1 / zeta^2 -> k^2 csch^2 w and
+// log zeta -> log sinh w (up to a constant).
+struct PeriodicRow {
+    FlowElement element;   // the copy n = 0; a source, vortex or doublet, never uniform or sector
+    Vec2 period;           // T, not zero
+    bool original = false; // the copy n = 0 is an element of the scene rather than an image
+
+    friend bool operator==(const PeriodicRow&, const PeriodicRow&) = default;
+};
+
+// Complex velocity and potential of the whole row at p. Infinite or NaN at a copy. Between the two
+// walls of a channel F has one branch cut, running along the channel from the element.
+Complex complexVelocity(const PeriodicRow& row, Vec2 p);
+Complex complexPotential(const PeriodicRow& row, Vec2 p);
+
+// The singular point of the copy closest to p along the row.
+Vec2 nearestCopy(const PeriodicRow& row, Vec2 p);
+
+// The copies whose singular points lie in `region`, at most a few hundred (a stretch from the middle
+// of the region if there are more than that, which only happens far beyond what can be resolved).
+std::vector<FlowElement> rowCopies(const PeriodicRow& row, const Rect& region);
 
 } // namespace pfl

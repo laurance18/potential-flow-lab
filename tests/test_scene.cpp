@@ -72,12 +72,125 @@ TEST_CASE("two perpendicular walls close the image system exactly") {
     CHECK(wallResidual(model, side) < 1e-12);
 }
 
-TEST_CASE("parallel walls truncate the image series and say so") {
-    const Scene scene{.elements = {SourceSink{.strength = 1.0, .position = {0.0, 0.2}},
-                                   SymmetryWall{.point = {0.0, -1.0}}, SymmetryWall{.point = {0.0, 1.0}}}};
+TEST_CASE("three parallel walls truncate the image series and say so") {
+    const Scene scene{.elements = {SourceSink{.strength = 1.0, .position = {0.0, 0.2}}, SymmetryWall{.point = {0.0, -1.0}},
+                                   SymmetryWall{.point = {0.0, 1.0}}, SymmetryWall{.point = {0.0, 2.5}}}};
     const FlowModel model = buildFlowModel(scene);
     CHECK_FALSE(model.imagesExact);
+    CHECK(model.field.rows.empty());
     CHECK_FALSE(sceneWarnings(scene, model).empty());
+}
+
+TEST_CASE("a channel of two parallel walls is exact for every element") {
+    for (const double flip : {0.0, 180.0}) { // the second wall may run the other way
+        const SymmetryWall lower{.point = {0.3, -0.8}, .angle = 25.0 * deg};
+        const SymmetryWall upper{.point = lower.point + lower.normal() * 2.0, .angle = (25.0 + flip) * deg};
+        const Scene scene{.elements = {UniformFlow{.speed = 1.0, .angle = 10.0 * deg},
+                                       SourceSink{.strength = 4.0, .position = {1.0, 0.0}},
+                                       Vortex{.circulation = -3.0, .position = {-1.5, -0.5}},
+                                       Doublet{.strength = 0.7, .position = {0.5, 0.9}, .angle = 70.0 * deg}, lower, upper}};
+        const FlowModel model = buildFlowModel(scene);
+        CHECK(model.imagesExact);
+        CHECK(model.images.empty());
+        CHECK(model.field.rows.size() == 6);
+        CHECK(model.field.elements.size() == 1); // the uniform flow; the others are in their rows
+        CHECK(wallResidual(model, lower) < 1e-12);
+        CHECK(wallResidual(model, upper) < 1e-12);
+        CHECK(model.freeStreamSpeed == doctest::Approx(std::cos(15.0 * deg)));
+        CHECK(sceneWarnings(scene, model).size() == 1); // only that the stream is cut to its part along the walls
+    }
+}
+
+TEST_CASE("channel: half of a source's flow leaves each way") {
+    const Scene scene{.elements = {SourceSink{.strength = 3.0, .position = {0.0, 0.2}}, SymmetryWall{.point = {0.0, -1.0}},
+                                   SymmetryWall{.point = {0.0, 1.0}}}};
+    const FlowField field = buildFlowModel(scene).field;
+    REQUIRE_FALSE(field.empty());
+    CHECK(field.velocity({30.0, 0.5}).x == doctest::Approx(3.0 / 4.0));
+    CHECK(field.velocity({-30.0, -0.5}).x == doctest::Approx(-3.0 / 4.0));
+    CHECK(std::abs(field.velocity({30.0, 0.5}).y) < 1e-12);
+}
+
+TEST_CASE("channel: elements on a wall behave as they do at a single wall") {
+    const SymmetryWall lower{.point = {0.0, -1.0}};
+    const SymmetryWall upper{.point = {0.0, 1.0}};
+    for (const double y : {-1.0, 1.0}) { // on the second wall the image is one period away
+        const FlowModel source = buildFlowModel({.elements = {SourceSink{.strength = 3.0, .position = {0.0, y}}, lower, upper}});
+        CHECK(source.field.rows.size() == 1); // its own image, not a second source
+        CHECK(source.field.velocity({30.0, 0.0}).x == doctest::Approx(3.0 / 8.0));
+        const FlowModel vortex = buildFlowModel({.elements = {Vortex{.circulation = 3.0, .position = {0.0, y}}, lower, upper}});
+        CHECK(length(vortex.field.velocity({0.5, 0.3})) == doctest::Approx(0.0)); // cancelled by its image
+    }
+}
+
+TEST_CASE("channel: an element and its own image in the scene are one pair, not two") {
+    const SymmetryWall lower{.point = {0.0, -1.0}};
+    const SymmetryWall upper{.point = {0.0, 1.0}};
+    const SourceSink a{.strength = 2.0, .position = {0.5, 0.2}};
+    const SourceSink b{.strength = 2.0, .position = {0.5, -2.2}}; // a reflected across y = -1
+    const FlowModel single = buildFlowModel({.elements = {a, lower, upper}});
+    const FlowModel both = buildFlowModel({.elements = {a, b, lower, upper}});
+    CHECK(both.field.rows.size() == 2);
+    const Vec2 p{1.0, 0.3};
+    CHECK(both.field.velocity(p).x == doctest::Approx(single.field.velocity(p).x));
+    CHECK(both.field.velocity(p).y == doctest::Approx(single.field.velocity(p).y));
+}
+
+TEST_CASE("channel: walls along one line are one wall, not a channel") {
+    const FlowModel model = buildFlowModel({.elements = {SourceSink{.position = {0.0, 1.0}}, SymmetryWall{},
+                                                         SymmetryWall{.point = {3.0, 0.0}}}});
+    CHECK(model.imagesExact);
+    CHECK(model.field.rows.empty());
+    CHECK(model.images.size() == 1);
+}
+
+TEST_CASE("channel: every copy is a singular point, however far away") {
+    const FlowField field = buildFlowModel({.elements = {SourceSink{.position = {0.0, 0.2}}, SymmetryWall{.point = {0.0, -1.0}},
+                                                         SymmetryWall{.point = {0.0, 1.0}}}})
+                                .field;
+    CHECK(field.nearSingularity({0.0, 0.2}, 0.01));         // the source
+    CHECK(field.nearSingularity({0.0, 0.2 + 40.0}, 0.01));  // ten periods up
+    CHECK(field.nearSingularity({0.0, -2.2 - 40.0}, 0.01)); // the mirror row
+    CHECK_FALSE(field.nearSingularity({0.5, 0.2}, 0.01));
+    // Rows at y = 0.2 + 4n and -2.2 + 4n; the view holds 0.2, 1.8 and -2.2.
+    CHECK(field.singularPoints({{-1.0, -2.5}, {1.0, 2.5}}).size() == 3);
+
+    // A very narrow channel seen from far away stays bounded.
+    const SymmetryWall lower{};
+    const FlowField narrow = buildFlowModel({.elements = {SourceSink{.position = {0.0, 1e-6}}, lower,
+                                                          SymmetryWall{.point = {0.0, 2e-6}}}})
+                                 .field;
+    CHECK(narrow.singularPoints({{-1.0, -1.0}, {1.0, 1.0}}).size() <= 512);
+    CHECK(std::isfinite(length(narrow.velocity({1.0, 1e-6})))); // far past where cosh overflows
+}
+
+TEST_CASE("channel: streamlines never cross the walls") {
+    const FlowField field = buildFlowModel({.elements = {SourceSink{.strength = 6.0, .position = {0.0, 0.2}},
+                                                         SymmetryWall{.point = {0.0, -1.0}}, SymmetryWall{.point = {0.0, 1.0}}}})
+                                .field;
+    StreamlineSettings settings;
+    settings.bounds = {{-4.0, -2.5}, {4.0, 2.5}};
+    settings.separation = 0.25;
+    const StreamlineSet set = computeStreamlines(field, settings);
+    REQUIRE(set.lines.size() > 10);
+    for (const std::vector<Vec2>& line : set.lines) {
+        const auto strip = [](Vec2 p) { return p.y < -1.0 ? 0 : (p.y < 1.0 ? 1 : 2); };
+        const bool sameStrip = std::ranges::all_of(line, [&](Vec2 p) {
+            return std::abs(p.y + 1.0) < 1e-6 || std::abs(p.y - 1.0) < 1e-6 || strip(p) == strip(line[line.size() / 2]);
+        });
+        CHECK(sameStrip);
+    }
+}
+
+TEST_CASE("channel: elements outside it are flagged") {
+    const SymmetryWall lower{.point = {0.0, -1.0}};
+    const SymmetryWall upper{.point = {0.0, 1.0}};
+    const Scene inside{.elements = {SourceSink{.position = {0.0, 0.5}}, lower, upper}};
+    CHECK(sceneWarnings(inside, buildFlowModel(inside)).empty());
+    const Scene outside{.elements = {SourceSink{.position = {0.0, 1.5}}, lower, upper}};
+    const std::vector<std::string> warnings = sceneWarnings(outside, buildFlowModel(outside));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings.front().find("outside the channel") != std::string::npos);
 }
 
 TEST_CASE("warnings for coincident singularities and elements on walls") {

@@ -77,6 +77,7 @@ public:
     double localStep(Vec2 p, double h) const {
         double distance = std::abs(h) / k_nearStepFactor;
         for (const Vec2 c : m_centres) distance = std::min(distance, length(p - c));
+        for (const PeriodicRow& row : m_field.rows) distance = std::min(distance, length(p - nearestCopy(row, p)));
         return std::copysign(k_nearStepFactor * distance, h);
     }
 
@@ -228,13 +229,11 @@ StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSetting
     // Fallback seeds: rings around singular points first (so sources and vortices get lines),
     // then a regular grid over the bounds.
     std::vector<Vec2> seeds;
-    for (const FlowElement& e : field.elements) {
-        const std::optional<Vec2> centre = singularPoint(e);
-        if (!centre || !settings.bounds.contains(*centre)) continue;
+    for (const Vec2 centre : field.singularPoints(settings.bounds)) {
         const double r = std::max(2.0 * settings.singularRadius, 0.5 * settings.separation);
         for (int k = 0; k < k_ringSeeds; ++k) {
             const double a = 2.0 * std::numbers::pi * (k + 0.5) / k_ringSeeds;
-            seeds.push_back(*centre + Vec2{r * std::cos(a), r * std::sin(a)});
+            seeds.push_back(centre + Vec2{r * std::cos(a), r * std::sin(a)});
         }
     }
     for (double y = settings.bounds.min.y + 0.5 * settings.separation; y < settings.bounds.max.y;

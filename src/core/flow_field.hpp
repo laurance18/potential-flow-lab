@@ -11,7 +11,8 @@
 // Domain: sector flows are defined only inside their wedge, so the admissible domain is the
 // intersection of all sector wedges. Outside it (inDomain() false) the field is undefined and must
 // be masked. Other elements are superposed unrestricted and do not keep the sector walls as
-// streamlines. Wall images are added as ordinary elements by buildFlowModel() (scene.hpp).
+// streamlines. Wall images are added as ordinary elements by buildFlowModel() (scene.hpp), or, in a
+// channel, as periodic rows that take the place of the elements they contain.
 #pragma once
 
 #include "core/flow_element.hpp"
@@ -23,7 +24,10 @@ namespace pfl {
 
 struct FlowField {
     std::vector<FlowElement> elements;
+    std::vector<PeriodicRow> rows;
     double singularRadius = 1e-9;
+
+    bool empty() const { return elements.empty() && rows.empty(); }
 
     Complex complexVelocity(Vec2 p) const;
     Complex complexPotential(Vec2 p) const;
@@ -31,6 +35,9 @@ struct FlowField {
 
     bool inDomain(Vec2 p) const;
     bool nearSingularity(Vec2 p, double radius) const;
+
+    // Every singular point in `region`, those of the periodic rows included.
+    std::vector<Vec2> singularPoints(const Rect& region) const;
 };
 
 // Median speed over a grid of points in `region` (skipping points outside the domain or close to a

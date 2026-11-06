@@ -34,6 +34,21 @@ TEST_CASE("stagnation points of the cylinder are at (+-a, 0)") {
     CHECK(points[0].y == doctest::Approx(0.0).epsilon(1e-9));
 }
 
+TEST_CASE("a body in a channel is found, and is not treated as isolated") {
+    // A cylinder of radius about 1 between walls at y = +-3: blocked a little, so faster at its sides.
+    const Scene scene{.elements = {UniformFlow{}, Doublet{}, Vortex{.circulation = 1.0}, SymmetryWall{.point = {0.0, -3.0}},
+                                   SymmetryWall{.point = {0.0, 3.0}}}};
+    const FlowModel model = buildFlowModel(scene);
+    const std::vector<BodySurface> bodies = findBodySurfaces(model, k_view);
+    const auto body = std::ranges::find_if(bodies, [](const BodySurface& b) { return length(b.centroid) < 0.5; });
+    REQUIRE(body != bodies.end());
+    CHECK(body->closed);
+    const BodyForces forces = bodyForces(*body, model);
+    CHECK_FALSE(forces.isolated);
+    CHECK(forces.circulation == doctest::Approx(1.0));
+    CHECK_FALSE(cylinderReference(*body, model).has_value());
+}
+
 TEST_CASE("cylinder: surface Cp matches 1 - 4 sin^2(theta), no drag, no lift") {
     const Scene scene{.elements = {UniformFlow{}, Doublet{}}};
     const FlowModel model = buildFlowModel(scene);

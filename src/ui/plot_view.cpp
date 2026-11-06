@@ -571,8 +571,14 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         drawSurfaces(dl, layers.surfaces);
 
         if (scene.plot.showImages) {
-            for (const FlowElement& image : model.images) {
+            const auto drawImage = [&](const FlowElement& image) {
                 std::visit([&](const auto& e) { drawMarker(dl, SceneElement{e}, result.limits, k_imageAlpha); }, image);
+            };
+            for (const FlowElement& image : model.images) drawImage(image);
+            for (const PeriodicRow& row : model.field.rows) {
+                for (const FlowElement& copy : rowCopies(row, result.limits)) {
+                    if (!row.original || !sameElement(copy, row.element)) drawImage(copy);
+                }
             }
         }
 

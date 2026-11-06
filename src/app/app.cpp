@@ -881,7 +881,7 @@ void App::updateStreamlines() {
     m_contours = {};
     m_surfaces.clear();
     m_stagnationPoints.clear();
-    if (!m_model.field.elements.empty()) {
+    if (!m_model.field.empty()) {
         const double worldPerPixel = view.size().x / m_plot.pixelSize.x;
         StreamlineSettings settings;
         settings.bounds = view.expanded(k_streamlineMargin);
@@ -928,7 +928,7 @@ void App::updateStreamlines() {
     m_streamlinesDirty = false;
 }
 
-bool App::particlesVisible() const { return m_scene.plot.showParticles && !m_model.field.elements.empty(); }
+bool App::particlesVisible() const { return m_scene.plot.showParticles && !m_model.field.empty(); }
 
 void App::renderParticles(double dt) {
     if (!particlesVisible() || m_trailRenderer->width() == 0) return;
@@ -970,7 +970,7 @@ void App::renderParticles(double dt) {
 void App::updateDye(double dt) {
     if (m_scene.rakes.empty() && m_dye.streaks().empty()) return;
     const FlowField& field = m_model.field;
-    if (field.elements.empty()) {
+    if (field.empty()) {
         m_dye.clear();
         return;
     }

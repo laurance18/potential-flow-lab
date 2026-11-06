@@ -26,6 +26,10 @@ constexpr ExampleScene k_examples[] = {
     {"source_near_wall.json", "Source near a wall",
      "A source Λ = 2π at (0, 1) above the symmetry wall y = 0.\n"
      "An image source below the wall keeps the flow from crossing it."},
+    {"channel_source.json", "Source in a channel",
+     "A source Λ = 2π at (0, 0.4) between symmetry walls at y = ±1.\n"
+     "Two infinite rows of images keep the flow in the channel; half of it leaves each way,\n"
+     "at speed Λ/2h = π/2 far from the source."},
     {"source_sink_vortex.json", "Source, sink and vortex",
      "A source Λ = 2π at (-2, 0), a sink of equal strength at (0, 0) and a clockwise vortex Γ = 2π at (2, 0)."},
     {"corner_flow_90deg.json", "Flow in a 90° corner", "Sector flow between walls at 0° and 90° (n = 2)."},

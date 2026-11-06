@@ -44,8 +44,13 @@ p' = w + 2((p − w)·t)t − (p − w), t = (cos φ, sin φ). Each image is F_i
 
 - source: same Λ; vortex: −Γ; doublet: same μ, β' = 2φ − β.
 - several walls: images are reflected again across every wall until no new copies appear. This
-  closes for one wall and for walls meeting at π/k; otherwise (e.g. parallel walls) the series is
-  truncated at 32 images per element and a warning says the wall condition is approximate.
+  closes for one wall and for walls meeting at π/k.
+- two parallel walls, width h: the copies repeat every T = 2h n in two rows (own and mirrored), each
+  summed in closed form with k = iπ/T: 1/ζ → k coth kζ, 1/ζ² → k² csch² kζ, log ζ → log sinh kζ
+  (`PeriodicRow`, `src/core/flow_element.cpp`). Direct sums only converge as 1/N. Past |Re kζ| = 20
+  the code uses the limits, because cosh and sinh overflow near 710.
+- anything else (three parallel walls, angles other than π/k): the series is truncated at 32 images
+  per element and a warning says the wall condition is approximate.
 - uniform flow: its image would double the component along the wall, so instead it is projected
   onto what the walls allow (the tangential component for parallel walls, zero for crossing walls).
 
@@ -105,6 +110,8 @@ particles and the probe. Any edit rebuilds the model and recomputes the streamli
   tests for (2, 0) and (3, 0) at (0, 1), stagnation at 210°/330°, V_r = 0 on r = a for a rotated
   cylinder.
 - Symmetry wall: `source_near_wall.json`, status-bar wall check, unit tests.
+- Channel: `channel_source.json`, against the real form of the row sum and the extrapolated direct
+  sum over the images, both in Verify → Physics checks.
 - Save / reopen: round-trip unit test, and every file in `examples/` is loaded by a test.
 - Independent check: `tools/report_figures.py` compares the exported field CSVs with closed-form
   solutions written in polar form in numpy; all cases agree to ~1e-15 (`docs/figures/validation.md`).

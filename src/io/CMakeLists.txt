@@ -10,6 +10,7 @@ pfl_embed_resources(pfl_examples
         examples/cylinder.json
         examples/lifting_cylinder.json
         examples/source_near_wall.json
+        examples/channel_source.json
         examples/source_sink_vortex.json
         examples/corner_flow_90deg.json
         examples/flat_plate_edge.json)

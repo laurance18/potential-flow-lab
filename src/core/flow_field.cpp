@@ -12,12 +12,19 @@ bool within(const FlowElement& element, Vec2 p, double radius) {
     return centre && lengthSquared(p - *centre) < radius * radius;
 }
 
+bool within(const PeriodicRow& row, Vec2 p, double radius) {
+    return lengthSquared(p - nearestCopy(row, p)) < radius * radius;
+}
+
 } // namespace
 
 Complex FlowField::complexVelocity(Vec2 p) const {
     Complex w{};
     for (const FlowElement& element : elements) {
         if (!within(element, p, singularRadius)) w += pfl::complexVelocity(element, p);
+    }
+    for (const PeriodicRow& row : rows) {
+        if (!within(row, p, singularRadius)) w += pfl::complexVelocity(row, p);
     }
     return w;
 }
@@ -27,6 +34,9 @@ Complex FlowField::complexPotential(Vec2 p) const {
     for (const FlowElement& element : elements) {
         if (!within(element, p, singularRadius)) f += pfl::complexPotential(element, p);
     }
+    for (const PeriodicRow& row : rows) {
+        if (!within(row, p, singularRadius)) f += pfl::complexPotential(row, p);
+    }
     return f;
 }
 
@@ -35,7 +45,20 @@ bool FlowField::inDomain(Vec2 p) const {
 }
 
 bool FlowField::nearSingularity(Vec2 p, double radius) const {
-    return std::ranges::any_of(elements, [p, radius](const FlowElement& e) { return within(e, p, radius); });
+    return std::ranges::any_of(elements, [p, radius](const FlowElement& e) { return within(e, p, radius); }) ||
+           std::ranges::any_of(rows, [p, radius](const PeriodicRow& r) { return within(r, p, radius); });
+}
+
+std::vector<Vec2> FlowField::singularPoints(const Rect& region) const {
+    std::vector<Vec2> points;
+    for (const FlowElement& element : elements) {
+        const std::optional<Vec2> centre = singularPoint(element);
+        if (centre && region.contains(*centre)) points.push_back(*centre);
+    }
+    for (const PeriodicRow& row : rows) {
+        for (const FlowElement& copy : rowCopies(row, region)) points.push_back(*singularPoint(copy));
+    }
+    return points;
 }
 
 double typicalSpeed(const FlowField& field, const Rect& region, int gridSize) {

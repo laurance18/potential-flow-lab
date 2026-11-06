@@ -14,6 +14,51 @@ bool close(double a, double b) { return std::abs(a - b) <= k_tolerance * (1.0 + 
 bool close(Vec2 a, Vec2 b) { return close(a.x, b.x) && close(a.y, b.y); }
 bool sameAngle(double a, double b) { return std::abs(std::remainder(a - b, 2.0 * std::numbers::pi)) <= k_tolerance; }
 
+// T = 2 h n when the walls are exactly two distinct parallel lines (walls along the same line count
+// once) a distance h apart, with n the normal of the first wall; otherwise nullopt.
+std::optional<Vec2> channelPeriod(std::span<const SymmetryWall> walls) {
+    const SymmetryWall& first = walls.front();
+    std::optional<double> gap;
+    for (const SymmetryWall& wall : walls) {
+        if (std::abs(std::sin(wall.angle - first.angle)) > k_tolerance) return std::nullopt;
+        const double offset = dot(wall.point - first.point, first.normal());
+        if (close(offset, 0.0)) continue;
+        if (gap && !close(offset, *gap)) return std::nullopt;
+        gap = offset;
+    }
+    if (!gap) return std::nullopt;
+    return first.normal() * (2.0 * std::abs(*gap));
+}
+
+// True if the two point elements are copies in one row of period T.
+bool sameRow(const FlowElement& a, const FlowElement& b, Vec2 period) {
+    const Vec2 gap = *singularPoint(a) - *singularPoint(b);
+    return sameElement(a, translated(b, period * std::round(dot(gap, period) / lengthSquared(period))));
+}
+
+// The element's own row and its mirror row. No mirror row for an element on a wall that is its own
+// image, and none for an element whose image the scene already holds as another element: the two
+// are then a pair, as for a single wall.
+std::vector<PeriodicRow> channelRows(std::span<const FlowElement> elements, const SymmetryWall& wall, Vec2 period) {
+    std::vector<PeriodicRow> rows;
+    std::vector<bool> paired(elements.size(), false);
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        if (paired[i]) continue;
+        rows.push_back({.element = elements[i], .period = period, .original = true});
+        const FlowElement image = *mirror(elements[i], wall);
+        if (sameRow(image, elements[i], period)) continue;
+        bool found = false;
+        for (std::size_t j = i + 1; j < elements.size() && !found; ++j) {
+            if (paired[j] || !sameRow(image, elements[j], period)) continue;
+            paired[j] = true;
+            found = true;
+            rows.push_back({.element = elements[j], .period = period, .original = true});
+        }
+        if (!found) rows.push_back({.element = image, .period = period});
+    }
+    return rows;
+}
+
 } // namespace
 
 Vec2 reflect(Vec2 p, const SymmetryWall& wall) {
@@ -67,6 +112,10 @@ ImageSystem buildImageSystem(std::span<const FlowElement> elements, std::span<co
     std::vector<FlowElement> all;
     for (const FlowElement& e : elements) {
         if (mirror(e, walls.front())) all.push_back(e);
+    }
+    if (const std::optional<Vec2> period = channelPeriod(walls)) {
+        result.rows = channelRows(all, walls.front(), *period);
+        return result;
     }
     const std::size_t originals = all.size();
     const std::size_t cap = originals * (k_maxImagesPerElement + 1);

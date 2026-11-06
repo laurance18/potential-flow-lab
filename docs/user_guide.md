@@ -212,9 +212,15 @@ with the method of images rather than just drawing a line:
   of the sector's own walls (the status bar warns otherwise).
 
 The status bar shows the numerical check: the largest |v · n| sampled along each wall in view,
-divided by the largest speed there. It should be around 10⁻¹⁶. Two parallel walls need an
-infinite row of images, so the program truncates it and warns that the wall condition is then
-approximate.
+divided by the largest speed there. It should be around 10⁻¹⁶.
+
+Two parallel walls make a channel. It needs infinite rows of images, which the program sums in
+closed form, so a channel is exact too (see the *Source in a channel* example). Half of a source's
+flow leaves each way, at speed Λ/2h far down a channel of width h. Put elements between the walls:
+one placed outside has an image inside, which acts as a real element there, and the status bar warns
+about it. Other wall layouts with no closed image system, such as three parallel walls or walls not
+meeting at 180°/k, are truncated at 32 images per element, and the status bar warns that the wall
+condition is then approximate.
 
 ## Saving and loading configurations
 
@@ -279,7 +285,7 @@ are in six groups:
 | Foundations | div V = 0 and curl V = 0 (Laplace), W = dF/dz for every element, and the flux and circulation around closed curves |
 | Elementary flows | Uniform flow, source and sink, vortex, doublet, corner flow and plate edge, at every node of a 201 × 117 grid |
 | Superposition and bodies | Cylinder with and without circulation, its stagnation points, the Rankine oval and half-body (ψ along the traced surface), a source near a wall |
-| Symmetry walls | No flow through an inclined wall or through two perpendicular walls |
+| Symmetry walls | No flow through an inclined wall, two perpendicular walls or a channel, and the channel's closed form against its series of images |
 | Pressure and forces | Cp on the cylinder, d'Alembert's paradox, Kutta–Joukowski lift |
 | Streamlines and equipotentials | Vortex streamlines are circles, and equipotentials cross the streamlines at 90° |
 

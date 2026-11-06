@@ -7,8 +7,14 @@
 // (each image is F_image(z) = conj(F(reflect(z))), so the line is a streamline of the pair).
 //
 // Several walls: images are reflected again across every wall until no new copies appear. That
-// closes exactly for one wall or walls meeting at pi/k; otherwise (e.g. two parallel walls, which
-// need an infinite row of images) the series is truncated and ImageSystem::exact is false.
+// closes exactly for one wall or walls meeting at pi/k.
+//
+// Two parallel walls (a channel of width h): the copies never close, they repeat every 2 h across
+// the channel in two rows, the elements' own and the row of their mirror images across either wall.
+// Each row is summed in closed form (PeriodicRow in flow_element.hpp), so this case is exact too.
+//
+// Anything else (three parallel walls, walls not meeting at pi/k) has no such sum here: the series
+// is truncated and ImageSystem::exact is false.
 //
 // Uniform flow is not mirrored, since its image would double the component along the wall. It is
 // instead reduced to the part every wall allows: the component along the walls when they are all
@@ -43,6 +49,7 @@ std::optional<FlowElement> mirror(const FlowElement& element, const SymmetryWall
 
 struct ImageSystem {
     std::vector<FlowElement> images; // mirrored copies only, not the originals
+    std::vector<PeriodicRow> rows;   // a channel: every copy of every element, originals included
     bool exact = true;               // false if the series of images had to be truncated
 };
 
