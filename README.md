@@ -10,7 +10,7 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
 - Main plot: labelled (x, y) axes, scroll to zoom, drag to pan; streamlines are recomputed after
   every add, edit or delete. Hover an element to name it, double-click it to edit it, or **drag it**
   to move it: the streamlines, contours, stagnation points and body surfaces follow live while the
-  particles keep flowing.
+  particles keep flowing. Click a stagnation point to show its dividing streamlines.
 - **Dye rakes**: drag a line across the plot and its emitters release continuous, pulsed dye
   streaks that the flow carries away (streaklines; in steady flow they trace the streamlines and
   the pulse spacing shows the speed). Rakes can be moved, turned and edited, and are saved with

@@ -215,3 +215,135 @@ TEST_CASE("two cylinders: each nearly closed, the gap reported and small") {
     }
 }
 
+
+namespace {
+
+// Largest change of the stream function along a line, away from the singular points.
+double psiDrift(const FlowField& field, const std::vector<Vec2>& line, double reference) {
+    double drift = 0.0;
+    for (const Vec2 p : line) {
+        if (!field.nearSingularity(p, 0.05)) drift = std::max(drift, std::abs(field.complexPotential(p).imag() - reference));
+    }
+    return drift;
+}
+
+bool runsWithTheFlow(const FlowField& field, const std::vector<Vec2>& line) {
+    for (std::size_t k = 0; k + 1 < line.size(); ++k) {
+        // At the midpoint: the velocity at a stagnation point itself has no meaningful sign.
+        if (dot(line[k + 1] - line[k], field.velocity((line[k] + line[k + 1]) * 0.5)) < 0.0) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("dividing streamlines of a cylinder's front stagnation point") {
+    const Scene scene{.elements = {UniformFlow{}, Doublet{}}};
+    const FlowField field = buildFlowModel(scene).field;
+    const std::vector<Vec2> stagnation = findStagnationPoints(field, k_view, 1.0);
+    REQUIRE(stagnation.size() == 2);
+    const Vec2 front{-1.0, 0.0};
+    const StreamlineSet set = dividingStreamlines(field, front, stagnation, k_view);
+    REQUIRE(set.lines.size() == 4);
+    CHECK(set.arrows.size() == 4);
+
+    int overBody = 0;
+    int upstream = 0;
+    int inside = 0;
+    for (const std::vector<Vec2>& line : set.lines) {
+        CHECK(runsWithTheFlow(field, line));
+        CHECK(psiDrift(field, line, 0.0) < 1e-6);
+        const Vec2 first = line.front();
+        const Vec2 last = line.back();
+        if (length(last - Vec2{1.0, 0.0}) < 1e-9) {
+            // Over the surface to the rear stagnation point, which ends the line.
+            ++overBody;
+            CHECK(length(first - front) < 1e-9);
+            for (const Vec2 p : line) CHECK(std::abs(length(p) - 1.0) < 1e-5);
+        } else if (first.x < -3.9) {
+            ++upstream; // along y = 0 from the edge of the view
+            CHECK(length(last - front) < 1e-9);
+            for (const Vec2 p : line) CHECK(std::abs(p.y) < 1e-9);
+        } else {
+            ++inside; // on from the doublet inside the cylinder
+            CHECK(length(first) < 0.1);
+            CHECK(length(last - front) < 1e-9);
+        }
+    }
+    CHECK(overBody == 2);
+    CHECK(upstream == 1);
+    CHECK(inside == 1);
+}
+
+TEST_CASE("dividing streamlines of a Rankine half-body leave the view") {
+    const Scene scene{.elements = {UniformFlow{}, SourceSink{.strength = 2.0 * pi}}}; // stagnation at x = -1
+    const FlowField field = buildFlowModel(scene).field;
+    const std::vector<Vec2> stagnation = findStagnationPoints(field, k_view, 1.0);
+    REQUIRE(stagnation.size() == 1);
+    const double lambda = 2.0 * pi;
+    const StreamlineSet set = dividingStreamlines(field, stagnation[0], stagnation, k_view);
+    REQUIRE(set.lines.size() == 4);
+    int leaving = 0;
+    for (const std::vector<Vec2>& line : set.lines) {
+        CHECK(runsWithTheFlow(field, line));
+        const Vec2 last = line.back();
+        if (!k_view.contains(last)) {
+            ++leaving;
+            CHECK(std::abs(std::abs(field.complexPotential(last).imag()) - 0.5 * lambda) < 1e-6); // |psi| = Lambda / 2
+        }
+    }
+    CHECK(leaving == 2);
+}
+
+TEST_CASE("a double stagnation point has six dividing streamlines") {
+    // Gamma = 4 pi a V_inf: the two stagnation points of the lifting cylinder have merged at (0, -1).
+    const Scene scene{.elements = {UniformFlow{}, Doublet{}, Vortex{.circulation = 4.0 * pi}}};
+    const FlowField field = buildFlowModel(scene).field;
+    const std::vector<Vec2> stagnation = findStagnationPoints(field, k_view, 1.0);
+    REQUIRE(stagnation.size() == 1);
+    CHECK(length(stagnation[0] - Vec2{0.0, -1.0}) < 1e-3);
+    CHECK(dividingStreamlines(field, stagnation[0], stagnation, k_view).lines.size() == 6);
+}
+
+TEST_CASE("dividing streamlines without a free stream: between two vortices of the same sign") {
+    const Scene scene{.elements = {Vortex{.circulation = 5.0, .position = {-1.0, 0.0}}, Vortex{.circulation = 5.0, .position = {1.0, 0.0}}}};
+    const FlowField field = buildFlowModel(scene).field;
+    const double speed = typicalSpeed(field, k_view);
+    const std::vector<Vec2> stagnation = findStagnationPoints(field, k_view, speed);
+    REQUIRE(stagnation.size() == 1);
+    CHECK(length(stagnation[0]) < 1e-9);
+    const StreamlineSet set = dividingStreamlines(field, stagnation[0], stagnation, k_view);
+    CHECK(set.lines.size() == 4);
+    for (const std::vector<Vec2>& line : set.lines) CHECK(runsWithTheFlow(field, line));
+}
+
+TEST_CASE("dividing streamlines at a corner stay inside the wedge") {
+    const Scene scene{.elements = {SectorFlow{.strength = 1.0, .vertex = {0.0, 0.0}, .wall1 = 0.0, .wall2 = pi / 2.0}}};
+    const FlowField field = buildFlowModel(scene).field;
+    const Vec2 vertex{0.0, 0.0};
+    const StreamlineSet set = dividingStreamlines(field, vertex, {vertex}, {{-4.0, -4.0}, {4.0, 4.0}});
+    CHECK(set.arrows.size() == set.lines.size());
+    for (const std::vector<Vec2>& line : set.lines) {
+        CHECK(line.size() > 100); // no stubs into the masked region
+        for (const Vec2 p : line) CHECK(field.inDomain(p));
+    }
+    CHECK(set.lines.size() == 2); // along the two walls
+}
+
+TEST_CASE("a stagnation point can be followed as the flow changes") {
+    Scene scene{.elements = {UniformFlow{}, Doublet{.strength = 1.0}}};
+    const Vec2 rear = followStagnationPoint(buildFlowModel(scene).field, {1.0, 0.1}, 1.0, 1.0).value();
+    CHECK(length(rear - Vec2{1.0, 0.0}) < 1e-9);
+
+    // The radius grows with the doublet strength.
+    std::get<Doublet>(scene.elements[1]).strength = 1.21;
+    const Vec2 moved = followStagnationPoint(buildFlowModel(scene).field, rear, 1.0, 1.0).value();
+    CHECK(length(moved - Vec2{1.1, 0.0}) < 1e-9);
+
+    // Without the doublet there is nothing left to follow.
+    scene.elements.pop_back();
+    CHECK_FALSE(followStagnationPoint(buildFlowModel(scene).field, moved, 1.0, 1.0).has_value());
+    // Out of reach.
+    scene.elements.push_back(Doublet{.strength = 1.0});
+    CHECK_FALSE(followStagnationPoint(buildFlowModel(scene).field, {3.0, 0.0}, 0.5, 1.0).has_value());
+}

@@ -14,6 +14,7 @@ constexpr int k_newtonIterations = 100;
 constexpr double k_zeroSpeed = 1e-9;        // |W| / speedScale accepted as a stagnation point
 constexpr double k_mergeDistance = 1e-4;    // stagnation points closer than this (x region size) are one
 constexpr int k_directionSamples = 720;     // samples on the circle around a stagnation point
+constexpr double k_directionOffset = 0.382; // of the first sample, in sample spacings
 constexpr double k_circleRadius = 1e-4;     // its radius, x body region size (smaller near other points)
 constexpr double k_snapDistance = 0.75;     // a traced line ends at a stagnation point this close (x step)
 constexpr double k_cylinderTolerance = 1e-3; // surface points within this fraction of a of r = a
@@ -104,10 +105,13 @@ std::vector<std::pair<double, bool>> branchDirections(const FlowField& field, Ve
         return std::pair{cross(r, v), dot(r, v)};
     };
     std::vector<std::pair<double, bool>> directions;
-    double t0 = 0.0;
+    // Offset so that no sample falls on a symmetry axis of the flow: on a branch cross(r, v) is exactly
+    // 0, which shows no sign change.
+    const auto sampleAngle = [](int k) { return 2.0 * pi * (k + k_directionOffset) / k_directionSamples; };
+    double t0 = sampleAngle(0);
     double g0 = sample(t0).first;
     for (int k = 1; k <= k_directionSamples; ++k) {
-        double t1 = 2.0 * pi * k / k_directionSamples;
+        double t1 = sampleAngle(k);
         const double g1 = sample(t1).first;
         if ((g0 > 0.0) != (g1 > 0.0)) {
             double a = t0;
@@ -132,6 +136,22 @@ struct TraceSettings {
     double singularGuard = 0.0;
     int maxPoints = 0;
 };
+
+// Radius of the circle sampled around stagnation[i], small enough to hold no other stagnation or
+// singular point.
+double circleRadius(const FlowField& field, const std::vector<Vec2>& stagnation, std::size_t i, double extent) {
+    double radius = k_circleRadius * extent;
+    for (std::size_t k = 0; k < stagnation.size(); ++k) {
+        if (k != i) radius = std::min(radius, 0.25 * length(stagnation[k] - stagnation[i]));
+    }
+    for (const FlowElement& element : field.elements) {
+        if (const std::optional<Vec2> c = singularPoint(element)) radius = std::min(radius, 0.25 * length(*c - stagnation[i]));
+    }
+    for (const PeriodicRow& row : field.rows) {
+        radius = std::min(radius, 0.25 * length(nearestCopy(row, stagnation[i]) - stagnation[i]));
+    }
+    return radius;
+}
 
 Branch traceBranch(const FlowField& field, const std::vector<Vec2>& stagnation, std::size_t start, double angle,
                    bool outgoing, double radius, const TraceSettings& settings) {
@@ -250,6 +270,29 @@ std::optional<std::pair<std::vector<Vec2>, double>> pathTo(const Branch& branch,
     return std::pair{std::move(points), distance};
 }
 
+// W is analytic, so its derivative along x is dW/dz. Damped far from a root; stops at a root or on
+// leaving `searchArea`.
+Complex newtonOnVelocity(const FlowField& field, Complex z, const Rect& searchArea, double extent) {
+    const double h = 1e-6 * extent;
+    const auto w = [&field](Complex q) { return field.complexVelocity(toVec(q)); };
+    for (int iteration = 0; iteration < k_newtonIterations; ++iteration) {
+        const Complex value = w(z);
+        const Complex derivative = (w(z + h) - w(z - h)) / (2.0 * h);
+        if (!finite(value) || !finite(derivative) || std::abs(derivative) == 0.0) break;
+        Complex step = value / derivative;
+        const double stepLength = std::abs(step);
+        if (stepLength > 0.1 * extent) step *= 0.1 * extent / stepLength;
+        z -= step;
+        if (!searchArea.contains(toVec(z)) || stepLength < 1e-14 * extent) break;
+    }
+    return z;
+}
+
+bool isStagnationPoint(const FlowField& field, Vec2 p, double speedScale, double extent) {
+    return field.inDomain(p) && !field.nearSingularity(p, 1e-6 * extent) &&
+           std::abs(field.complexVelocity(p)) <= k_zeroSpeed * speedScale;
+}
+
 BodySurface openBody(const Branch& a, const Branch& b, const FlowModel& model) {
     // Body on the right, like the clockwise closed surfaces. A source's half-body extends downstream,
     // so that runs in along the lower branch and out along the upper one; a sink's the other way.
@@ -273,27 +316,13 @@ std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& regio
     const Vec2 size = region.size();
     const double extent = std::max(size.x, size.y);
     if (!(extent > 0.0) || !(speedScale > 0.0)) return found;
-    const double h = 1e-6 * extent;
     const Rect searchArea = region.expanded(0.1);
-    const auto w = [&field](Complex z) { return field.complexVelocity(toVec(z)); };
 
     for (int j = 0; j < seedGrid; ++j) {
         for (int i = 0; i < seedGrid; ++i) {
-            Complex z = toComplex(region.min + Vec2{size.x * (i + 0.5) / seedGrid, size.y * (j + 0.5) / seedGrid});
-            for (int iteration = 0; iteration < k_newtonIterations; ++iteration) {
-                const Complex value = w(z);
-                // W is analytic, so its derivative along x is dW/dz.
-                const Complex derivative = (w(z + h) - w(z - h)) / (2.0 * h);
-                if (!finite(value) || !finite(derivative) || std::abs(derivative) == 0.0) break;
-                Complex step = value / derivative;
-                const double stepLength = std::abs(step);
-                if (stepLength > 0.1 * extent) step *= 0.1 * extent / stepLength; // damped far from a root
-                z -= step;
-                if (!searchArea.contains(toVec(z)) || stepLength < 1e-14 * extent) break;
-            }
-            const Vec2 p = toVec(z);
-            if (!region.contains(p) || !field.inDomain(p) || field.nearSingularity(p, 1e-6 * extent)) continue;
-            if (!(std::abs(w(z)) <= k_zeroSpeed * speedScale)) continue;
+            const Vec2 seed = region.min + Vec2{size.x * (i + 0.5) / seedGrid, size.y * (j + 0.5) / seedGrid};
+            const Vec2 p = toVec(newtonOnVelocity(field, toComplex(seed), searchArea, extent));
+            if (!region.contains(p) || !isStagnationPoint(field, p, speedScale, extent)) continue;
             const bool known = std::ranges::any_of(found, [&](Vec2 q) {
                 return lengthSquared(p - q) < k_mergeDistance * k_mergeDistance * extent * extent;
             });
@@ -301,6 +330,53 @@ std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& regio
         }
     }
     return found;
+}
+
+std::optional<Vec2> followStagnationPoint(const FlowField& field, Vec2 from, double reach, double speedScale) {
+    if (!(reach > 0.0) || !(speedScale > 0.0)) return std::nullopt;
+    const Vec2 corner{reach, reach};
+    const Vec2 p = toVec(newtonOnVelocity(field, toComplex(from), {from - corner, from + corner}, reach));
+    if (!(length(p - from) <= reach) || !isStagnationPoint(field, p, speedScale, reach)) return std::nullopt;
+    return p;
+}
+
+StreamlineSet dividingStreamlines(const FlowField& field, Vec2 point, std::vector<Vec2> stagnation, const Rect& bounds,
+                                  const SurfaceSettings& settings) {
+    StreamlineSet set;
+    const double extent = std::max(bounds.size().x, bounds.size().y);
+    if (!(extent > 0.0)) return set;
+
+    std::erase_if(stagnation, [&](Vec2 q) { return length(q - point) < k_mergeDistance * extent; });
+    stagnation.insert(stagnation.begin(), point);
+    TraceSettings trace;
+    trace.bounds = {{std::min(bounds.min.x, point.x), std::min(bounds.min.y, point.y)},
+                    {std::max(bounds.max.x, point.x), std::max(bounds.max.y, point.y)}};
+    trace.step = settings.stepFraction * extent;
+    trace.singularGuard = 2.0 * trace.step;
+    trace.maxPoints = settings.maxPointsPerBranch;
+
+    const double radius = circleRadius(field, stagnation, 0, extent);
+    for (const auto& [angle, outgoing] : branchDirections(field, point, radius)) {
+        // At a sector vertex the velocity formula also has radial directions outside the wedge.
+        if (!field.inDomain(point + Vec2{std::cos(angle), std::sin(angle)} * radius)) continue;
+        std::vector<Vec2> line = traceBranch(field, stagnation, 0, angle, outgoing, radius, trace).points;
+        if (!outgoing) std::ranges::reverse(line);
+
+        double total = 0.0;
+        for (std::size_t k = 0; k + 1 < line.size(); ++k) total += length(line[k + 1] - line[k]);
+        double along = 0.0;
+        for (std::size_t k = 0; k + 1 < line.size(); ++k) {
+            const Vec2 d = line[k + 1] - line[k];
+            const double l = length(d);
+            along += l;
+            if (along >= 0.5 * total && l > 0.0) {
+                set.arrows.push_back({line[k], d / l});
+                break;
+            }
+        }
+        set.lines.push_back(std::move(line));
+    }
+    return set;
 }
 
 std::vector<BodySurface> findBodySurfaces(const FlowModel& model, const Rect& view, const SurfaceSettings& settings) {
@@ -323,17 +399,7 @@ std::vector<BodySurface> findBodySurfaces(const FlowModel& model, const Rect& vi
 
     std::vector<std::vector<Branch>> branches(stagnation.size());
     for (std::size_t i = 0; i < stagnation.size(); ++i) {
-        // Small enough that the circle holds no other stagnation or singular point.
-        double radius = k_circleRadius * extent;
-        for (std::size_t k = 0; k < stagnation.size(); ++k) {
-            if (k != i) radius = std::min(radius, 0.25 * length(stagnation[k] - stagnation[i]));
-        }
-        for (const FlowElement& element : field.elements) {
-            if (const std::optional<Vec2> c = singularPoint(element)) radius = std::min(radius, 0.25 * length(*c - stagnation[i]));
-        }
-        for (const PeriodicRow& row : field.rows) {
-            radius = std::min(radius, 0.25 * length(nearestCopy(row, stagnation[i]) - stagnation[i]));
-        }
+        const double radius = circleRadius(field, stagnation, i, extent);
         for (const auto& [angle, outgoing] : branchDirections(field, stagnation[i], radius)) {
             branches[i].push_back(traceBranch(field, stagnation, i, angle, outgoing, radius, trace));
         }

@@ -36,6 +36,12 @@ The window has four parts:
   A wall is moved parallel to itself (grab it anywhere along its line). A uniform flow has no
   position, so it cannot be dragged; double-click its arrow to change it.
 - Stagnation points (V = 0) are marked with red diamonds; hover one to read its coordinates.
+  **Click** one to show its dividing streamlines in bold yellow, and click it again to hide them.
+  Every streamline through the point is drawn (four at a simple stagnation point, six where two
+  have merged), inside a body as well as outside it, up to the next stagnation point, a singular
+  point or the edge of the view, with an arrow on each. Several points can be selected at once.
+  The lines follow the point through drags, sliders, sweeps and pans, and go away with it if it
+  disappears. The selection is not saved with the scene and is not part of the undo history.
 - Regions outside a sector flow's wedge are darkened: the flow is not defined there.
 
 ## Adding flow elements
@@ -88,7 +94,8 @@ The **View** menu holds the plot settings, which are saved with the scene:
     point, use the bottom band. Cp needs a uniform flow; without one, the scale box says so.
 - **Surface pressure**: see the next section.
 - **Stagnation points**: the diamond markers. They are found by Newton's method on the analytic
-  complex velocity, so they sit exactly where W = 0.
+  complex velocity, so they sit exactly where W = 0. Switching them off also hides any dividing
+  streamlines.
 - **Tracer particles** and **Particle trails**: animated particles coloured by speed (blue slow,
   red fast). They are a visual aid only; the streamlines are the result.
 

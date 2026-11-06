@@ -24,6 +24,8 @@ constexpr ImU32 k_maskColor = IM_COL32(0, 0, 0, 120);
 constexpr ImU32 k_hintColor = IM_COL32(200, 200, 210, 160);
 constexpr ImU32 k_highlightColor = IM_COL32(255, 255, 255, 230);
 constexpr ImU32 k_surfaceCasingColor = IM_COL32(235, 235, 235, 235);
+constexpr ImU32 k_dividingColor = IM_COL32(255, 225, 60, 255);
+constexpr ImU32 k_dividingCasingColor = IM_COL32(20, 22, 30, 230);
 constexpr float k_imageAlpha = 0.35f;
 constexpr float k_maskCellPx = 6.0f;
 constexpr float k_hitRadiusPx = 10.0f;
@@ -335,6 +337,33 @@ void drawStagnationPoint(ImDrawList* dl, Vec2 point) {
     dl->AddQuad(corners[0], corners[1], corners[2], corners[3], k_highlightColor, 1.5f * s);
 }
 
+// Dividing streamlines: bold, on a dark casing so they stand out over any background. The traced
+// points are a fraction of a pixel apart, so the drawn vertices are thinned out. All the casing goes
+// first: the lines meet at their stagnation point.
+void drawDividingStreamlines(ImDrawList* dl, const StreamlineSet& set, bool arrows) {
+    const float s = uiScale();
+    const float minGap = 2.0f * s;
+    std::vector<ImVec2> pixels;
+    for (const auto& [colour, width] : {std::pair{k_dividingCasingColor, 4.5f * s}, std::pair{k_dividingColor, 2.4f * s}}) {
+        for (const std::vector<Vec2>& line : set.lines) {
+            pixels.assign(1, toPixels(line.front()));
+            for (std::size_t k = 1; k < line.size(); ++k) {
+                const ImVec2 p = toPixels(line[k]);
+                const ImVec2 d = p - pixels.back();
+                if (d.x * d.x + d.y * d.y < minGap * minGap && k + 1 < line.size()) continue;
+                pixels.push_back(p);
+            }
+            dl->AddPolyline(pixels.data(), static_cast<int>(pixels.size()), colour, ImDrawFlags_None, width);
+        }
+    }
+    if (!arrows) return;
+    const float size = 11.0f * s;
+    for (const Arrow& a : set.arrows) {
+        const ImVec2 dir = normalized({static_cast<float>(a.direction.x), static_cast<float>(-a.direction.y)});
+        drawArrowHead(dl, toPixels(a.position) + dir * (0.5f * size), dir, size, k_dividingColor);
+    }
+}
+
 void drawStreamlines(ImDrawList* dl, const StreamlineSet& set, bool arrows, ImU32 colour = k_streamlineColor,
                      float width = 1.2f) {
     const float scale = uiScale();
@@ -568,6 +597,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         drawStreamlines(dl, layers.equipotentials, false, k_equipotentialColor, 1.0f);
         drawStreamlines(dl, layers.streamlines, scene.plot.showArrows);
         drawDye(dl, layers.dye);
+        drawDividingStreamlines(dl, layers.dividingLines, scene.plot.showArrows);
         drawSurfaces(dl, layers.surfaces);
 
         if (scene.plot.showImages) {
@@ -636,16 +666,31 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             drawRake(dl, scene.rakes[i], dyeColor(i), rakeHit == i || held);
         }
 
+        // The entry of dividingPoints at a stagnation point, if it shows its dividing streamlines.
+        const auto dividingIndex = [&](Vec2 point) -> std::optional<std::size_t> {
+            for (std::size_t i = 0; i < layers.dividingPoints.size(); ++i) {
+                const ImVec2 d = toPixels(layers.dividingPoints[i]) - toPixels(point);
+                if (d.x * d.x + d.y * d.y < 1.0f) return i;
+            }
+            return std::nullopt;
+        };
         std::optional<Vec2> stagnationHit;
         float stagnationDist = hitRadius;
         for (const Vec2 point : layers.stagnationPoints) {
             drawStagnationPoint(dl, point);
+            if (dividingIndex(point)) dl->AddCircle(toPixels(point), 9.0f * uiScale(), k_dividingColor, 0, 2.0f * uiScale());
             const ImVec2 d = toPixels(point) - mouse;
             const float distance = std::sqrt(d.x * d.x + d.y * d.y);
-            if (idle && !hit && !rakeHit && distance < stagnationDist) {
+            if (idle && !rakeHit && distance < stagnationDist) {
                 stagnationDist = distance;
                 stagnationHit = point;
             }
+        }
+        // Elements are on top, except a wall: it can be grabbed anywhere along its line, and stagnation
+        // points often lie on it.
+        if (stagnationHit && hit) {
+            if (std::holds_alternative<SymmetryWall>(scene.elements[*hit])) hit.reset();
+            else stagnationHit.reset();
         }
 
         drawContourScale(dl, layers.contours, plotPos, result.pixelSize);
@@ -698,10 +743,18 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Delete)) result.rakeRemove = rakeHit;
         } else if (stagnationHit) {
-            ImGui::SetTooltip("Stagnation point (%.4g, %.4g)\nV = 0%s", stagnationHit->x, stagnationHit->y,
-                              model.freeStreamSpeed > 0.0 ? ", Cp = 1" : "");
+            const std::optional<std::size_t> shown = dividingIndex(*stagnationHit);
+            ImGui::SetTooltip("Stagnation point (%.4g, %.4g)\nV = 0%s\nClick to %s its dividing streamlines.",
+                              stagnationHit->x, stagnationHit->y, model.freeStreamSpeed > 0.0 ? ", Cp = 1" : "",
+                              shown ? "hide" : "show");
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            dl->AddCircle(toPixels(*stagnationHit), 11.0f * uiScale(), k_highlightColor, 0, 1.5f * uiScale());
+            if (pressed) {
+                if (shown) result.dividingRemove = shown;
+                else result.dividingAdd = stagnationHit;
+            }
         }
-        m_grabbableHovered = draggable || rakeHit.has_value();
+        m_grabbableHovered = draggable || rakeHit.has_value() || stagnationHit.has_value();
 
         ImPlot::PopPlotClipRect();
         if (hovered) {

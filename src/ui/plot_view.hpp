@@ -13,6 +13,7 @@
 // the element back. Dye rakes are placed by dragging across the plot after the toolbar's rake tool
 // was chosen, moved by dragging their line, turned or stretched by dragging an end, and edited or
 // deleted from a right-click menu. While anything is grabbed, dragging no longer pans the plot.
+// Clicking a stagnation point shows or hides its dividing streamlines, which are drawn above the dye.
 #pragma once
 
 #include "core/flow_field.hpp"
@@ -69,6 +70,8 @@ struct PlotLayers {
     SurfaceLayer surfaces;
     ParticleLayer particles;
     const std::vector<Vec2>& stagnationPoints; // empty when they are switched off
+    const std::vector<Vec2>& dividingPoints;   // stagnation points showing their dividing streamlines
+    const StreamlineSet& dividingLines;        // those streamlines
     DyeLayer dye;
 };
 
@@ -90,6 +93,8 @@ struct PlotViewResult {
     std::optional<ElementMove> move;      // an element dragged to a new position this frame
     std::optional<RakeChange> rakeChange; // a rake placed, dragged or edited this frame
     std::optional<std::size_t> rakeRemove;
+    std::optional<Vec2> dividingAdd;           // a stagnation point clicked to show its dividing streamlines
+    std::optional<std::size_t> dividingRemove; // index in PlotLayers::dividingPoints, clicked to hide them
     bool dragging = false;                // an element or a rake is being dragged
 };
 

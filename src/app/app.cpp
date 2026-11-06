@@ -43,6 +43,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <format>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,6 +60,9 @@ constexpr float k_fontSize = 17.0f;
 // Streamlines: traced a little beyond the view so panning shows lines at the edges.
 constexpr double k_streamlineMargin = 0.05;
 constexpr double k_singularRadiusPx = 3.0; // lines stop this many pixels from a singular point
+// A stagnation point showing its dividing streamlines may move this fraction of the view at one
+// update. Farther away it has gone, and whatever Newton's method found is a different point.
+constexpr double k_dividingReach = 0.25;
 
 // Contours: |V| (and Cp from it) is sampled on cells this many pixels wide; the |V| scale tops out
 // at this multiple of the typical speed in the view, in this many bands.
@@ -205,6 +209,7 @@ private:
 
     // Per-frame work after the UI.
     void updateStreamlines();
+    void traceDividingStreamlines();
     void renderParticles(double dt);
     void updateDye(double dt);
     double animationTimeScale(const Rect& view) const;
@@ -259,6 +264,10 @@ private:
     std::vector<BodySurface> m_surfaces;
     double m_lowestCp = -3.0; // bottom of the Cp colour scale
     std::vector<Vec2> m_stagnationPoints;
+    // Stagnation points clicked to show their dividing streamlines: not saved with the scene.
+    std::vector<Vec2> m_dividingPoints;
+    StreamlineSet m_dividingLines;
+    bool m_dividingDirty = false; // a point was clicked; the flow and view are unchanged
     std::optional<Rect> m_streamlineView;
     bool m_streamlinesDirty = true;
     // Live changes and pans start from the lines shown (core/streamline.hpp); a new scene, a finished
@@ -534,6 +543,8 @@ void App::frame(double dt) {
                       .surfaces = {.bodies = m_surfaces, .lowestCp = m_lowestCp, .marker = m_surfaceMarker},
                       .particles = {},
                       .stagnationPoints = m_stagnationPoints,
+                      .dividingPoints = m_dividingPoints,
+                      .dividingLines = m_dividingLines,
                       .dye = {.streaks = m_dye.streaks(),
                               .maxAge = k_dyeLifetime,
                               .pulseLength = static_cast<int>(std::lround(k_dyePulseSeconds / k_dyeReleaseInterval))}};
@@ -572,6 +583,14 @@ void App::frame(double dt) {
     }
     if (m_plot.rakeChange) applyRakeChange(*m_plot.rakeChange);
     if (m_plot.rakeRemove) removeRake(*m_plot.rakeRemove);
+    if (m_plot.dividingAdd) {
+        m_dividingPoints.push_back(*m_plot.dividingAdd);
+        m_dividingDirty = true;
+    }
+    if (m_plot.dividingRemove) {
+        m_dividingPoints.erase(m_dividingPoints.begin() + static_cast<std::ptrdiff_t>(*m_plot.dividingRemove));
+        m_dividingDirty = true;
+    }
     if (!parameters.edits.empty()) {
         for (const ElementEdit& edit : parameters.edits) m_scene = applyEdit(std::move(m_scene), edit);
         sceneEdited(true);
@@ -749,6 +768,7 @@ void App::setScene(Scene scene, std::filesystem::path path, const ExampleScene* 
     m_dirty = false;
     m_plotView.setView(m_scene.plot.view);
     m_dye.clear();
+    m_dividingPoints.clear();
     m_parameterPanel.reset();
     m_history.reset(snapshotOf(m_scene));
     m_uncommitted = false;
@@ -866,7 +886,10 @@ void App::onCloseRequested() {
 void App::updateStreamlines() {
     const Rect view = m_plot.limits;
     if (m_plot.pixelSize.x <= 0.0f || m_plot.pixelSize.y <= 0.0f) return;
-    if (!m_streamlinesDirty && m_streamlineView == view) return;
+    if (!m_streamlinesDirty && m_streamlineView == view) {
+        if (m_dividingDirty) traceDividingStreamlines();
+        return;
+    }
 
     m_referenceSpeed = typicalSpeed(m_model.field, view);
     const double separation = view.size().y / std::max(m_scene.plot.streamlineDensity, 1);
@@ -924,8 +947,35 @@ void App::updateStreamlines() {
             m_stagnationPoints = findStagnationPoints(m_model.field, view, m_referenceSpeed);
         }
     }
+    traceDividingStreamlines();
     m_streamlineView = view;
     m_streamlinesDirty = false;
+}
+
+void App::traceDividingStreamlines() {
+    m_dividingDirty = false;
+    m_dividingLines = {};
+    if (!m_scene.plot.showStagnationPoints) return; // back with the markers, which are what is clicked
+
+    // The points move with the flow. One that has gone is dropped; two that merged become one.
+    const Rect view = m_plot.limits;
+    const double reach = k_dividingReach * std::max(view.size().x, view.size().y);
+    const double pixel = view.size().x / m_plot.pixelSize.x;
+    std::vector<Vec2> followed;
+    for (const Vec2 point : m_dividingPoints) {
+        const std::optional<Vec2> moved = followStagnationPoint(m_model.field, point, reach, m_referenceSpeed);
+        if (!moved) continue;
+        const bool known = std::ranges::any_of(followed, [&](Vec2 q) { return length(q - *moved) < pixel; });
+        if (!known) followed.push_back(*moved);
+    }
+    m_dividingPoints = std::move(followed);
+
+    const Rect bounds = view.expanded(k_streamlineMargin);
+    for (const Vec2 point : m_dividingPoints) {
+        StreamlineSet set = dividingStreamlines(m_model.field, point, m_stagnationPoints, bounds);
+        std::ranges::move(set.lines, std::back_inserter(m_dividingLines.lines));
+        m_dividingLines.arrows.insert(m_dividingLines.arrows.end(), set.arrows.begin(), set.arrows.end());
+    }
 }
 
 bool App::particlesVisible() const { return m_scene.plot.showParticles && !m_model.field.empty(); }

@@ -27,6 +27,7 @@
 #pragma once
 
 #include "core/scene.hpp"
+#include "core/streamline.hpp"
 #include "core/vec2.hpp"
 
 #include <optional>
@@ -73,6 +74,17 @@ struct SurfaceSettings {
 // The stagnation points of `field` inside `region` (excluding singular points), deduplicated.
 // `speedScale` sets the |W| that counts as zero (1e-9 of it).
 std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& region, double speedScale, int seedGrid = 32);
+
+// The stagnation point Newton's method reaches from `from`, if it is within `reach`: where a known
+// stagnation point has moved to after a small change of the flow. Nullopt if it has gone.
+std::optional<Vec2> followStagnationPoint(const FlowField& field, Vec2 from, double reach, double speedScale);
+
+// The dividing streamlines through the stagnation point `point`: the lines of step 2 above, traced
+// (step 3) until they reach one of the stagnation points in `stagnation`, a singular point or the
+// edge of `bounds`, which sets the step and need not contain `point`. Each line runs in the flow
+// direction with one arrow halfway along it, so a line arriving at `point` ends there. No seeds.
+StreamlineSet dividingStreamlines(const FlowField& field, Vec2 point, std::vector<Vec2> stagnation, const Rect& bounds,
+                                  const SurfaceSettings& settings = {});
 
 // The bodies near the singular points of the flow, traced far enough to cross `view`. Empty
 // without a free stream.
