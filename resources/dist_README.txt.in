@@ -19,7 +19,8 @@ CONTROLS
   - Left toolbar: click an icon to add a uniform flow, source/sink, vortex,
     doublet, sector flow or symmetry wall; enter its parameters and press Apply.
   - Plot: scroll to zoom, drag to pan. Hover an element to see it, double-click
-    it to edit it.
+    it to edit it. Click a stagnation point to show its dividing streamlines.
+  - Edit menu: Undo (Ctrl+Z) and Redo (Ctrl+Y or Ctrl+Shift+Z).
   - Examples menu: ready-made scenes (cylinder, lifting cylinder, Rankine
     oval and half-body, source near a wall, corner flow, ...). One click
     loads the scene; Save stores your own copy.
