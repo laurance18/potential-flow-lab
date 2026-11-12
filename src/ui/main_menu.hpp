@@ -1,4 +1,5 @@
-// main_menu.hpp: the application's main menu bar (File, Edit, Examples, Elements, View, Verify) and its shortcuts.
+// main_menu.hpp: the application's main menu bar (File, Edit, Examples, Elements, View, Verify, Help)
+// and its shortcuts.
 //
 // File: New, Open, Save, Save As, the image and CSV exports, Record animation (or Stop recording),
 // Clear All, Quit (and Reload shaders in Debug builds). Edit: Undo (Ctrl+Z) and Redo (Ctrl+Y or
@@ -7,6 +8,7 @@
 // Parameters panel, reset the view and the plot settings that are saved with the scene (streamline
 // density, arrows, wall images, equipotentials, |V| or Cp background, surface pressure, stagnation
 // points, particles), edited in place. Verify: the physics checks (verification_window.hpp), F5.
+// Help: the user guide (F1), the sign conventions, the keyboard shortcuts and About (help_window.hpp).
 // At the right end of the bar: the recording in progress with
 // a Stop button, or a short notice (e.g. the file just saved).
 #pragma once
@@ -50,6 +52,10 @@ struct MainMenuActions {
     bool stopRecording = false;
     bool toggleParameterPanel = false;
     bool verify = false; // open the physics checks
+    bool helpGuide = false; // Help menu: open the user guide (F1), ...
+    bool helpConventions = false;
+    bool helpShortcuts = false;
+    bool helpAbout = false;
     bool clearAll = false;
     bool quit = false;
     bool reloadShaders = false;

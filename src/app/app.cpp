@@ -18,6 +18,7 @@
 #include "render/particle_renderer.hpp"
 #include "render/shader_sources.hpp"
 #include "render/trail_renderer.hpp"
+#include "ui/help_window.hpp"
 #include "ui/main_menu.hpp"
 #include "ui/parameter_dialog.hpp"
 #include "ui/parameter_panel.hpp"
@@ -246,6 +247,7 @@ private:
     RecordDialog m_recordDialog;
     VerificationWindow m_verification;
     std::optional<VerificationShow> m_pendingShow; // for DiscardingAction::Verification
+    HelpWindow m_help;
     std::string m_notice;
     double m_noticeUntil = 0.0; // glfwGetTime() when the notice goes away
     PlotViewResult m_plot; // plot geometry from the latest frame
@@ -415,9 +417,24 @@ bool App::initGraphics() {
         showFatalError(k_glRequiredTitle, k_glRequiredText);
         return false;
     }
-    logMessage(std::string("OpenGL ") + reinterpret_cast<const char*>(glGetString(GL_VERSION)) + " on " +
-               reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
+    const std::string glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const std::string glRenderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    logMessage("OpenGL " + glVersion + " on " + glRenderer);
     if (installGlDebugOutput()) logMessage("OpenGL debug output enabled");
+
+    // Help → About.
+#ifdef NDEBUG
+    constexpr const char* k_config = "Release";
+#else
+    constexpr const char* k_config = "Debug";
+#endif
+    m_help.setAboutInfo(AboutInfo{.version = PFL_VERSION,
+                                  .system = {{"GLFW", glfwGetVersionString()},
+                                             {"nlohmann/json", PFL_JSON_VERSION},
+                                             {"glad", "2.0.8 (OpenGL 4.6 core loader)"},
+                                             {"OpenGL", glVersion},
+                                             {"Graphics card", glRenderer},
+                                             {"Build", std::format("{} build of {}, MSVC {}", k_config, __DATE__, _MSC_VER)}}});
 
     m_particleRenderer = std::make_unique<ParticleRenderer>();
     m_trailRenderer = std::make_unique<TrailRenderer>();
@@ -611,6 +628,7 @@ void App::frame(double dt) {
         m_pendingShow = std::move(show);
         request(DiscardingAction::Verification);
     }
+    m_help.draw();
 
     if (m_confirmDiscard) {
         openDiscardChangesDialog();
@@ -666,6 +684,10 @@ void App::handleMenu(const MainMenuActions& actions) {
         if (!m_showParameters && !m_recording) m_parameterPanel.stop();
     }
     if (actions.verify) m_verification.open();
+    if (actions.helpGuide) m_help.openGuide();
+    if (actions.helpConventions) m_help.openConventions();
+    if (actions.helpShortcuts) m_help.openShortcuts();
+    if (actions.helpAbout) m_help.openAbout();
     if (actions.reloadShaders) reloadShaders();
     if (actions.resetView) m_plotView.setView(PlotSettings{}.view);
     if (actions.plotChanged) {

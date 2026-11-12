@@ -28,8 +28,9 @@ FetchContent_Declare(implot
     GIT_TAG        851cdbdd60d1dfb64c23e987969694de0f547a6b)
 
 # --- nlohmann/json v3.12.0 (release tarball) -------------------------------------------------
+set(PFL_JSON_VERSION 3.12.0) # also shown in Help → About
 FetchContent_Declare(nlohmann_json
-    URL      https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    URL      https://github.com/nlohmann/json/releases/download/v${PFL_JSON_VERSION}/json.tar.xz
     URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SYSTEM)

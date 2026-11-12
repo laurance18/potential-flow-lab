@@ -40,6 +40,9 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   Blasius, the streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
   Each check shows its error against its tolerance and the program's numbers beside theory, and can
   load its flow into the plot.
+- **Help** menu: the user guide (F1) built into the exe, with chapters and a search box; the sign
+  conventions (complex potential of every element, Λ, Γ, μ, angles, wall images, Cp, forces); the
+  keyboard shortcuts; and About (version, libraries, graphics card).
 - **Surface pressure**: the bodies (cylinder, Rankine oval, half-body, ...) are found from their
   stagnation points; their surfaces are coloured by Cp with pressure arrows, and a side panel plots
   Cp along the surface (exact curve for a cylinder) with the integrated lift and drag compared with
@@ -136,10 +139,10 @@ As a final check, copy the exe alone into an empty folder on another PC and doub
 - **Static runtime:** `CMAKE_MSVC_RUNTIME_LIBRARY = MultiThreaded$<$<CONFIG:Debug>:Debug>` (`/MT`,
   `/MTd`). It is set before any dependency is fetched, so they all use it.
 - **Static dependencies:** `BUILD_SHARED_LIBS=OFF`. ImGui/ImPlot are compiled into `pfl_imgui`.
-- **Embedded assets:** `cmake/EmbedResources.cmake` turns `shaders/*` and `examples/*.json` into
-  byte arrays inside the exe at build time, using a generated `.cpp` that is rebuilt when a shader changes. Byte arrays
-  (not string literals) avoid MSVC's string-literal size limit and will also work for fonts and
-  icons.
+- **Embedded assets:** `cmake/EmbedResources.cmake` turns `shaders/*`, `examples/*.json` and
+  `docs/user_guide.md` (Help → User guide) into byte arrays inside the exe at build time, using a
+  generated `.cpp` that is rebuilt when a file changes. Byte arrays (not string literals) avoid
+  MSVC's string-literal size limit and will also work for fonts and icons.
 - **Windows resources:** `resources/app.rc.in` adds the app icon (`resources/app.ico`, regenerate
   with `python tools/make_icon.py`) and version info taken from `project(VERSION ...)`.
 - **No console in Release:** the exe links with `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`, so

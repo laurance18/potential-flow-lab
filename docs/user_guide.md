@@ -17,7 +17,7 @@ The window has four parts:
 |---|---|
 | Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below them, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
-| Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View** and **Verify** menus. |
+| Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View**, **Verify** and **Help** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
 
 ## The flow view
@@ -309,6 +309,17 @@ Click a check to open it. You see what theory says, how the program was tested, 
 numbers next to the exact ones, the error and the tolerance. **Show in plot** loads that flow into
 the plot, so you can look at it and change it. **Copy report** copies every result as plain text,
 for example for a lab report. The same checks run in the unit tests (`tests/test_verification.cpp`).
+
+## Help menu
+
+- **User guide** (F1): this guide, built into the exe. The chapters are listed on the left; the
+  search box keeps only the chapters that mention a word. Esc closes it.
+- **Sign conventions...**: the coordinate and angle conventions, the complex potential and
+  velocity of every element with the meaning of each sign (Λ, Γ, μ, V, θ₁, θ₂, φ), how the wall
+  images are formed, and Cp, lift and drag.
+- **Keyboard shortcuts...**: every key and mouse gesture, grouped by what it acts on.
+- **About Potential Flow Lab...**: the version, the libraries built in, the OpenGL version and
+  the graphics card in use, with a Copy button for problem reports.
 
 ## Troubleshooting
 

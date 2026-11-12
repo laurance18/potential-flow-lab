@@ -13,6 +13,11 @@ target_link_libraries(PotentialFlowLab PRIVATE pfl_core pfl_render pfl_ui pfl_io
                                                mfplat mfreadwrite mfuuid delayimp)
 pfl_set_warnings(PotentialFlowLab)
 
+# Help → About shows the version and the pinned libraries.
+target_compile_definitions(PotentialFlowLab PRIVATE
+    PFL_VERSION="${PROJECT_VERSION}"
+    PFL_JSON_VERSION="${PFL_JSON_VERSION}")
+
 # Media Foundation (MP4 export) is missing on Windows "N" editions: load it only when a video is
 # recorded, so the program still starts there (mp4_writer_win32.cpp checks for it first).
 target_link_options(PotentialFlowLab PRIVATE /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)

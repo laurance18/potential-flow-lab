@@ -88,6 +88,20 @@ void drawVerifyMenu(MainMenuActions& actions) {
     ImGui::EndMenu();
 }
 
+void drawHelpMenu(MainMenuActions& actions) {
+    if (!ImGui::BeginMenu("Help")) return;
+    if (ImGui::MenuItem("User guide", "F1")) actions.helpGuide = true;
+    ImGui::SetItemTooltip("How to use the program, chapter by chapter, with a search box.");
+    if (ImGui::MenuItem("Sign conventions...")) actions.helpConventions = true;
+    ImGui::SetItemTooltip("What the signs of Λ, Γ, μ and the angles mean, the complex potential of every element,\n"
+                          "the wall images, Cp and the forces.");
+    if (ImGui::MenuItem("Keyboard shortcuts...")) actions.helpShortcuts = true;
+    ImGui::Separator();
+    if (ImGui::MenuItem("About Potential Flow Lab...")) actions.helpAbout = true;
+    ImGui::SetItemTooltip("Version, author and the libraries and graphics card in use.");
+    ImGui::EndMenu();
+}
+
 // Right end of the menu bar: the recording in progress, or the notice.
 void drawMenuBarStatus(const MainMenuState& state, MainMenuActions& actions) {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -125,6 +139,7 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
     if (canReloadShaders && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route)) actions.reloadShaders = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, route)) actions.toggleParameterPanel = true;
     if (ImGui::Shortcut(ImGuiKey_F5, route)) actions.verify = true;
+    if (ImGui::Shortcut(ImGuiKey_F1, route)) actions.helpGuide = true;
     // Not while a dialog or menu is open; a text field being edited takes Ctrl+Z for itself.
     if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
         if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, route)) actions.undo = true;
@@ -174,6 +189,7 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
         actions.elements = drawElementsMenu(scene);
         drawViewMenu(plot, state.parameterPanel, actions);
         drawVerifyMenu(actions);
+        drawHelpMenu(actions);
         drawMenuBarStatus(state, actions);
         ImGui::EndMainMenuBar();
     }
