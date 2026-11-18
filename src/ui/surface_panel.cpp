@@ -10,6 +10,7 @@
 #include <cmath>
 #include <format>
 #include <limits>
+#include <numbers>
 #include <string>
 
 namespace pfl {
@@ -37,12 +38,13 @@ struct Curve {
 
 Curve makeCurve(const BodySurface& body, int axis, const std::optional<CylinderReference>& cylinder) {
     Curve curve;
+    const bool panelExact = !cylinder && !body.cpExact.empty();
     const std::vector<double>& source = axis == 0 ? body.angle : axis == 1 ? body.streamwise : body.arcLength;
     for (std::size_t k = 0; k < body.points.size(); ++k) {
         if (axis == 0 && k > 0 && std::abs(source[k] - source[k - 1]) > 180.0) {
             curve.x.push_back(nan);
             curve.cp.push_back(nan);
-            if (cylinder) curve.exact.push_back(nan);
+            if (cylinder || panelExact) curve.exact.push_back(nan);
             curve.index.push_back(k);
         }
         curve.x.push_back(source[k]);
@@ -50,6 +52,8 @@ Curve makeCurve(const BodySurface& body, int axis, const std::optional<CylinderR
         if (cylinder) {
             const Vec2 r = body.points[k] - cylinder->centre;
             curve.exact.push_back(cylinder->cp(std::atan2(r.y, r.x)));
+        } else if (panelExact) {
+            curve.exact.push_back(body.cpExact[k]);
         }
         curve.index.push_back(k);
     }
@@ -57,7 +61,28 @@ Curve makeCurve(const BodySurface& body, int axis, const std::optional<CylinderR
 }
 
 std::string bodyName(std::size_t b, const BodySurface& body) {
-    return std::format("Body {}{}", b + 1, body.closed ? "" : " (half-body)");
+    return std::format("Body {}{}", b + 1, body.panelBody ? " (panels)" : body.closed ? "" : " (half-body)");
+}
+
+// The label of a body's closed-form curve.
+const char* exactLabel(const BodySurface& body, const FlowModel& model) {
+    if (!body.panelBody) return "Exact (cylinder)";
+    const PanelBody& shape = model.field.panelBodies[*body.panelBody].body;
+    return shape.semiAxisA == shape.semiAxisB ? "Exact (circle)" : "Exact (ellipse)";
+}
+
+// What the panel method says about a panel body.
+void drawPanelInfo(const BodySurface& body, const FlowModel& model) {
+    const SourcePanels& panels = model.field.panelBodies[*body.panelBody];
+    double worst = 0.0;
+    if (!body.cpExact.empty()) {
+        for (std::size_t k = 0; k < body.cp.size(); ++k) worst = std::max(worst, std::abs(body.cp[k] - body.cpExact[k]));
+    }
+    ImGui::Text("Source panels: N = %zu, Σλs / (V∞ · perimeter) = %.2e", panels.size(),
+                std::abs(panels.netSource) / (model.freeStreamSpeed * panels.perimeter()));
+    ImGui::SetItemTooltip("The net source strength of the panels: zero for the exact solution of a closed body,\n"
+                          "so a measure of the discretization error. It shrinks as N grows.");
+    if (!body.cpExact.empty()) ImGui::Text("max |Cp − Cp exact| at the control points = %.2e", worst);
 }
 
 void forceRow(const char* name, const std::string& computed, const std::string& exact) {
@@ -79,6 +104,7 @@ void drawForces(std::size_t b, const BodySurface& body, const FlowModel& model) 
     ImGui::Spacing();
     ImGui::Text("%s: chord c = %.4g, Γ inside = %.4g", bodyName(b, body).c_str(), f.chord, f.circulation);
     ImGui::Text("Cp min = %.4g at (%.3g, %.3g)", *minimum, at.x, at.y);
+    if (body.panelBody) drawPanelInfo(body, model);
     if (ImGui::BeginTable(("##forces" + std::to_string(b)).c_str(), 3,
                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
         ImGui::TableSetupColumn("per unit span");
@@ -108,6 +134,94 @@ void drawForces(std::size_t b, const BodySurface& body, const FlowModel& model) 
                            "loops around the body together with the fluid circulating with it; the force is "
                            "the same as on the body inside.");
     }
+}
+
+// The source strength of every panel of the panel bodies along the surface, on the axis of the Cp
+// plot, over the exact sheet where it is known. Returns the surface point hovered, if any.
+std::optional<Vec2> drawStrengthPlot(const std::vector<BodySurface>& bodies, int axis, const FlowModel& model) {
+    const float s = uiScale();
+    const double speed = model.freeStreamSpeed;
+    std::optional<Vec2> picked;
+    ImGui::SeparatorText("Source strength of the panels");
+    ImGui::SetItemTooltip("λ: volume flow per unit length out of each panel (> 0 a source, < 0 a sink), solved so that\n"
+                          "no fluid crosses the panel at its control point. The exact curve is the continuous source\n"
+                          "sheet that makes the same flow outside the body: λ = −v·n of the uniform flow inside it.");
+    const ImVec2 plotSize(-1.0f, std::max(150.0f * s, 0.42f * ImGui::GetContentRegionAvail().y));
+    constexpr ImPlotFlags plotFlags = ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
+    if (!ImPlot::BeginPlot("##panel-strength", plotSize, plotFlags)) return picked;
+    ImPlot::SetupAxis(ImAxis_X1, axis == 0 ? "θ (°)" : axis == 1 ? "x/c" : "s", ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupAxis(ImAxis_Y1, "λ / V∞", ImPlotAxisFlags_AutoFit);
+    if (axis == 0) ImPlot::SetupAxisTicks(ImAxis_X1, 0.0, 360.0, 5);
+    ImPlot::SetupLegend(ImPlotLocation_South, ImPlotLegendFlags_Outside | ImPlotLegendFlags_Horizontal);
+    const double zero = 0.0;
+    ImPlot::PlotInfLines("##lambda0", &zero, 1,
+                         {ImPlotProp_LineColor, k_zeroColor, ImPlotProp_Flags,
+                          static_cast<int>(ImPlotItemFlags_NoLegend) | static_cast<int>(ImPlotInfLinesFlags_Horizontal)});
+
+    const ImVec2 mouse = ImGui::GetMousePos();
+    float best = k_pickRadiusPx * s;
+    std::optional<std::pair<std::size_t, std::size_t>> hit; // body, point
+    for (std::size_t b = 0; b < bodies.size() && b < k_bodyColors.size(); ++b) {
+        const BodySurface& body = bodies[b];
+        if (!body.panelBody || body.strength.size() != body.points.size()) continue;
+        const std::vector<double>& source = axis == 0 ? body.angle : axis == 1 ? body.streamwise : body.arcLength;
+        std::vector<double> x;
+        std::vector<double> y;
+        std::vector<double> exact;
+        std::vector<std::size_t> index;
+        const bool withExact = body.strengthExact.size() == body.points.size();
+        for (std::size_t k = 0; k < body.points.size(); ++k) {
+            if (axis == 0 && k > 0 && std::abs(source[k] - source[k - 1]) > 180.0) {
+                x.push_back(nan);
+                y.push_back(nan);
+                if (withExact) exact.push_back(nan);
+                index.push_back(k);
+            }
+            x.push_back(source[k]);
+            y.push_back(body.strength[k] / speed);
+            if (withExact) exact.push_back(body.strengthExact[k] / speed);
+            index.push_back(k);
+        }
+        const int n = static_cast<int>(x.size());
+        if (withExact) {
+            ImPlot::PlotLine("Exact sheet", x.data(), exact.data(), n,
+                             {ImPlotProp_LineColor, k_exactColor, ImPlotProp_LineWeight, 5.0f * s});
+        }
+        ImPlot::PlotLine(bodyName(b, body).c_str(), x.data(), y.data(), n,
+                         {ImPlotProp_LineColor, k_bodyColors[b], ImPlotProp_LineWeight, 2.0f * s, ImPlotProp_Marker,
+                          ImPlotMarker_Circle, ImPlotProp_MarkerSize, 2.5f * s});
+        if (!ImPlot::IsPlotHovered()) continue;
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            if (std::isnan(x[i])) continue;
+            const ImVec2 d = ImPlot::PlotToPixels(x[i], y[i]) - mouse;
+            const float distance = std::sqrt(d.x * d.x + d.y * d.y);
+            if (distance < best) {
+                best = distance;
+                hit = {b, index[i]};
+            }
+        }
+    }
+    if (hit) {
+        const auto [b, k] = *hit;
+        const BodySurface& body = bodies[b];
+        const double x = axis == 0 ? body.angle[k] : axis == 1 ? body.streamwise[k] : body.arcLength[k];
+        picked = body.points[k];
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        dl->AddCircle(ImPlot::PlotToPixels(x, body.strength[k] / speed), 6.0f * s, k_bodyColors[b], 0, 2.0f * s);
+        ImPlot::PopPlotClipRect();
+        const std::size_t n = body.points.size() - 1;
+        std::string text = std::format("{}, panel {} of {}\n{} = {:.4g}\nλ / V∞ = {:.5f}", bodyName(b, body),
+                                       (body.firstPanel + k) % n + 1, n, axis == 0 ? "θ" : axis == 1 ? "x/c" : "s", x,
+                                       body.strength[k] / speed);
+        if (body.strengthExact.size() == body.points.size()) {
+            text += std::format("  (exact sheet {:.5f})", body.strengthExact[k] / speed);
+        }
+        text += std::format("\nλ / 2πV∞ = {:.4f}", body.strength[k] / (2.0 * std::numbers::pi * speed));
+        ImGui::SetTooltip("%s", text.c_str());
+    }
+    ImPlot::EndPlot();
+    return picked;
 }
 
 } // namespace
@@ -154,7 +268,9 @@ std::optional<Vec2> SurfacePanel::draw(ImVec2 pos, ImVec2 size, const std::vecto
             ImGui::EndCombo();
         }
 
-        const ImVec2 plotSize(-1.0f, std::max(220.0f * s, 0.55f * ImGui::GetContentRegionAvail().y));
+        const bool anyPanels = std::ranges::any_of(bodies, [](const BodySurface& b) { return b.panelBody.has_value(); });
+        const ImVec2 plotSize(-1.0f, std::max(anyPanels ? 180.0f * s : 220.0f * s,
+                                              (anyPanels ? 0.38f : 0.55f) * ImGui::GetContentRegionAvail().y));
         constexpr ImPlotFlags plotFlags = ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
         if (ImPlot::BeginPlot("##surface-cp", plotSize, plotFlags)) {
             ImPlot::SetupAxis(ImAxis_X1, axis == 0 ? "θ (°)" : axis == 1 ? "x/c" : "s", ImPlotAxisFlags_AutoFit);
@@ -177,12 +293,15 @@ std::optional<Vec2> SurfacePanel::draw(ImVec2 pos, ImVec2 size, const std::vecto
                 const std::optional<CylinderReference> cylinder = cylinderReference(body, model);
                 const Curve curve = makeCurve(body, axis, cylinder);
                 const int n = static_cast<int>(curve.x.size());
-                if (cylinder) {
-                    ImPlot::PlotLine("Exact (cylinder)", curve.x.data(), curve.exact.data(), n,
+                if (!curve.exact.empty()) {
+                    ImPlot::PlotLine(exactLabel(body, model), curve.x.data(), curve.exact.data(), n,
                                      {ImPlotProp_LineColor, k_exactColor, ImPlotProp_LineWeight, 5.0f * s});
                 }
+                // Panel bodies: a marker at every control point, where the method gives Cp.
                 ImPlot::PlotLine(bodyName(b, body).c_str(), curve.x.data(), curve.cp.data(), n,
-                                 {ImPlotProp_LineColor, k_bodyColors[b], ImPlotProp_LineWeight, 2.0f * s});
+                                 {ImPlotProp_LineColor, k_bodyColors[b], ImPlotProp_LineWeight, 2.0f * s,
+                                  ImPlotProp_Marker, body.panelBody ? ImPlotMarker_Circle : ImPlotMarker_None,
+                                  ImPlotProp_MarkerSize, 2.5f * s});
                 if (!ImPlot::IsPlotHovered()) continue;
                 for (std::size_t i = 0; i < curve.x.size(); ++i) {
                     if (std::isnan(curve.x[i])) continue;
@@ -208,6 +327,8 @@ std::optional<Vec2> SurfacePanel::draw(ImVec2 pos, ImVec2 size, const std::vecto
                 if (const std::optional<CylinderReference> cylinder = cylinderReference(body, model)) {
                     const Vec2 r = body.points[k] - cylinder->centre;
                     text += std::format("  (exact {:.4f})", cylinder->cp(std::atan2(r.y, r.x)));
+                } else if (!body.cpExact.empty()) {
+                    text += std::format("  (exact {:.4f})", body.cpExact[k]);
                 }
                 text += std::format("\nat ({:.4g}, {:.4g})", body.points[k].x, body.points[k].y);
                 ImGui::SetTooltip("%s", text.c_str());
@@ -216,6 +337,9 @@ std::optional<Vec2> SurfacePanel::draw(ImVec2 pos, ImVec2 size, const std::vecto
         }
         if (anyOpen && axis != 2) ImGui::TextDisabled("Half-bodies are open: they are plotted against s only.");
         if (bodies.size() > k_bodyColors.size()) ImGui::TextDisabled("Only the first %zu bodies are plotted.", k_bodyColors.size());
+        if (anyPanels) {
+            if (const std::optional<Vec2> point = drawStrengthPlot(bodies, axis, model)) picked = point;
+        }
 
         if (anyClosed) {
             ImGui::SeparatorText("Forces from the surface pressure");

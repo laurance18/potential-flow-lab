@@ -1,5 +1,6 @@
 #include "core/scene.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 #include <numbers>
@@ -25,13 +26,27 @@ bool coincide(Vec2 a, Vec2 b) {
 
 double distanceToWall(Vec2 p, const SymmetryWall& wall) { return std::abs(dot(p - wall.point, wall.normal())); }
 
-// The flow element of a scene element, or nullopt for a wall.
+// The flow element of a scene element, or nullopt for a wall or a panel body.
 std::optional<FlowElement> asFlowElement(const SceneElement& element) {
     return std::visit(Overloaded{
                           [](const SymmetryWall&) -> std::optional<FlowElement> { return std::nullopt; },
+                          [](const PanelBody&) -> std::optional<FlowElement> { return std::nullopt; },
                           [](const auto& e) -> std::optional<FlowElement> { return FlowElement{e}; },
                       },
                       element);
+}
+
+std::string describeBody(const PanelBody& e) {
+    const std::string turn = e.angle != 0.0 ? std::format(", θ = {:.4g}°", e.angle * k_degrees) : std::string();
+    if (e.shape == PanelShape::Rectangle) {
+        return std::format("{:.4g} × {:.4g} rectangle at {}{}, N = {}", 2.0 * e.semiAxisA, 2.0 * e.semiAxisB,
+                           formatPoint(e.position), turn, e.panels);
+    }
+    if (e.semiAxisA == e.semiAxisB) {
+        return std::format("circle a = {:.4g} at {}, N = {}", e.semiAxisA, formatPoint(e.position), e.panels);
+    }
+    return std::format("ellipse a = {:.4g}, b = {:.4g} at {}{}, N = {}", e.semiAxisA, e.semiAxisB, formatPoint(e.position),
+                       turn, e.panels);
 }
 
 } // namespace
@@ -44,6 +59,7 @@ const char* kindName(ElementKind kind) {
     case ElementKind::Doublet: return "Doublet";
     case ElementKind::Sector: return "Sector (wedge) flow";
     case ElementKind::Wall: return "Symmetry wall";
+    case ElementKind::PanelBody: return "Source-panel body";
     }
     return "?";
 }
@@ -56,6 +72,7 @@ SceneElement defaultElement(ElementKind kind, Vec2 position) {
     case ElementKind::Doublet: return Doublet{.strength = 1.0, .position = position, .angle = 0.0};
     case ElementKind::Sector: return SectorFlow{.strength = 1.0, .vertex = position, .wall1 = 0.0, .wall2 = pi / 2.0};
     case ElementKind::Wall: return SymmetryWall{.point = position, .angle = 0.0};
+    case ElementKind::PanelBody: return PanelBody{.position = position};
     }
     return UniformFlow{};
 }
@@ -80,6 +97,7 @@ std::string describe(const SceneElement& element) {
             [](const SymmetryWall& e) {
                 return std::format("through {} at {:.4g}°", formatPoint(e.point), e.angle * k_degrees);
             },
+            [](const PanelBody& e) { return describeBody(e); },
         },
         element);
 }
@@ -91,6 +109,7 @@ std::optional<std::string> sceneElementError(const SceneElement& element) {
         }
         return std::nullopt;
     }
+    if (const auto* body = std::get_if<PanelBody>(&element)) return panelBodyError(*body);
     return validationError(*asFlowElement(element));
 }
 
@@ -115,12 +134,18 @@ SceneElement movedTo(SceneElement element, Vec2 position) {
     return element;
 }
 
-FlowModel buildFlowModel(const Scene& scene) {
+FlowModel buildFlowModel(const Scene& scene, bool solvePanels) {
     FlowModel model;
     std::vector<FlowElement> flows;
-    for (const SceneElement& element : scene.elements) {
+    std::vector<PanelBody> bodies;
+    std::vector<std::size_t> bodyElements;
+    for (std::size_t i = 0; i < scene.elements.size(); ++i) {
+        const SceneElement& element = scene.elements[i];
         if (const auto* wall = std::get_if<SymmetryWall>(&element)) {
             model.walls.push_back(*wall);
+        } else if (const auto* body = std::get_if<PanelBody>(&element)) {
+            bodies.push_back(*body);
+            bodyElements.push_back(i);
         } else {
             flows.push_back(*asFlowElement(element));
         }
@@ -144,6 +169,8 @@ FlowModel buildFlowModel(const Scene& scene) {
     model.field.elements.insert(model.field.elements.end(), model.images.begin(), model.images.end());
     model.freeStream = velocityFromW(freeStream);
     model.freeStreamSpeed = std::abs(freeStream);
+    // Last, since the panels must cancel the normal flow of everything else, images included.
+    if (solvePanels && !bodies.empty()) model.field.panelBodies = solveSourcePanels(bodies, bodyElements, model.field);
     return model;
 }
 
@@ -158,10 +185,13 @@ std::vector<std::string> sceneWarnings(const Scene& scene, const FlowModel& mode
     };
     std::vector<Centre> centres;
     std::vector<std::pair<std::size_t, SymmetryWall>> walls;
+    std::vector<std::pair<std::size_t, std::vector<Vec2>>> bodies; // panel bodies and their vertices
     for (std::size_t i = 0; i < elements.size(); ++i) {
         const SceneElement& e = elements[i];
         if (const auto* wall = std::get_if<SymmetryWall>(&e)) {
             walls.emplace_back(i + 1, *wall);
+        } else if (const auto* body = std::get_if<PanelBody>(&e)) {
+            if (!panelBodyError(*body)) bodies.emplace_back(i + 1, panelVertices(*body));
         } else if (const auto* sector = std::get_if<SectorFlow>(&e)) {
             centres.push_back({i + 1, sector->vertex});
         } else if (const std::optional<Vec2> point = singularPoint(*asFlowElement(e))) {
@@ -235,6 +265,31 @@ std::vector<std::string> sceneWarnings(const Scene& scene, const FlowModel& mode
             warnings.push_back(std::format("Element #{} lies outside the channel, so one of its images lies inside it "
                                            "and acts as a real element there.",
                                            c.number));
+        }
+    }
+    for (const auto& [number, vertices] : bodies) {
+        for (const Centre& c : centres) {
+            if (!insidePolygon(vertices, c.point)) continue;
+            warnings.push_back(std::format("Element #{} lies inside source-panel body #{}. Outside the body only its "
+                                           "circulation counts (a vortex gives the body lift, as in a lifting "
+                                           "cylinder); the panels cancel the rest of its flow through the surface.",
+                                           c.number, number));
+        }
+        if (!walls.empty()) {
+            warnings.push_back(std::format("Source-panel body #{} has no images in the walls, so the walls are not "
+                                           "streamlines near it (it does feel the images of the other elements).",
+                                           number));
+        }
+    }
+    for (std::size_t a = 0; a < bodies.size(); ++a) {
+        for (std::size_t b = a + 1; b < bodies.size(); ++b) {
+            const auto overlaps = [](const std::vector<Vec2>& inner, const std::vector<Vec2>& outer) {
+                return std::ranges::any_of(inner, [&](Vec2 v) { return insidePolygon(outer, v); });
+            };
+            if (!overlaps(bodies[a].second, bodies[b].second) && !overlaps(bodies[b].second, bodies[a].second)) continue;
+            warnings.push_back(std::format("Source-panel bodies #{} and #{} overlap: panels of one lie inside the "
+                                           "other, so the solution has no meaning.",
+                                           bodies[a].first, bodies[b].first));
         }
     }
     if (!model.imagesExact) {

@@ -13,9 +13,13 @@
 // be masked. Other elements are superposed unrestricted and do not keep the sector walls as
 // streamlines. Wall images are added as ordinary elements by buildFlowModel() (scene.hpp), or, in a
 // channel, as periodic rows that take the place of the elements they contain.
+//
+// Source-panel bodies (panel_method.hpp) are solved by buildFlowModel() against everything else and
+// then added to the sum. Their insides are outside the flow domain.
 #pragma once
 
 #include "core/flow_element.hpp"
+#include "core/panel_method.hpp"
 #include "core/vec2.hpp"
 
 #include <vector>
@@ -25,15 +29,19 @@ namespace pfl {
 struct FlowField {
     std::vector<FlowElement> elements;
     std::vector<PeriodicRow> rows;
+    std::vector<SourcePanels> panelBodies;
     double singularRadius = 1e-9;
 
-    bool empty() const { return elements.empty() && rows.empty(); }
+    bool empty() const { return elements.empty() && rows.empty() && panelBodies.empty(); }
 
     Complex complexVelocity(Vec2 p) const;
     Complex complexPotential(Vec2 p) const;
     Vec2 velocity(Vec2 p) const { return velocityFromW(complexVelocity(p)); }
 
+    // False inside a sector's excluded region or a panel body.
     bool inDomain(Vec2 p) const;
+    // The panel body containing p, if any.
+    const SourcePanels* panelBodyAt(Vec2 p) const;
     bool nearSingularity(Vec2 p, double radius) const;
 
     // Every singular point in `region`, those of the periodic rows included.

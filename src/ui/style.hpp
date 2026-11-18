@@ -18,6 +18,8 @@ inline constexpr ImU32 k_doubletColor = IM_COL32(195, 140, 245, 255);
 inline constexpr ImU32 k_sectorColor = IM_COL32(90, 205, 225, 255);
 inline constexpr ImU32 k_wallColor = IM_COL32(235, 235, 235, 255);
 inline constexpr ImU32 k_uniformColor = IM_COL32(235, 235, 235, 255);
+inline constexpr ImU32 k_panelColor = IM_COL32(150, 195, 255, 255);     // panel bodies: outline and markers
+inline constexpr ImU32 k_panelFillColor = IM_COL32(44, 50, 64, 255);   // ... and the solid inside
 
 // Bodies in the surface-pressure panel, in this fixed order (identity, not rank).
 inline constexpr std::array<ImU32, 8> k_bodyColors = {

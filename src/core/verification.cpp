@@ -574,6 +574,9 @@ SceneElement turnedElement(SceneElement element, double a) {
                 e.vertex = turned(e.vertex, a);
                 e.wall1 += a;
                 e.wall2 += a;
+            } else if constexpr (std::is_same_v<T, PanelBody>) {
+                e.position = turned(e.position, a);
+                e.angle += a;
             } else {
                 e.point = turned(e.point, a);
                 e.angle += a;
@@ -603,6 +606,9 @@ SceneElement mirroredElement(SceneElement element) {
                 e.vertex = mirroredInX(e.vertex);
                 e.strength = -e.strength;
                 e.wall1 = -std::exchange(e.wall2, -e.wall1);
+            } else if constexpr (std::is_same_v<T, PanelBody>) {
+                e.position = mirroredInX(e.position); // both shapes are symmetric about their own axes
+                e.angle = -e.angle;
             } else {
                 e.point = mirroredInX(e.point);
                 e.angle = -e.angle;
@@ -1955,6 +1961,376 @@ VerificationResult dyeStreaks() {
 }
 
 
+// --- Panel methods ----------------------------------------------------------------------
+
+// The exact side for an ellipse with semi-axes a > b, in the body's own frame and in elliptic
+// coordinates z = c cosh(ξ + iη), c² = a² − b², the surface being ξ = ξ₀ with tanh ξ₀ = b/a.
+struct EllipseFrame {
+    Vec2 centre;
+    double angle = 0.0; // of the a axis, counter-clockwise from +x
+    double a = 1.0;
+    double b = 1.0;
+};
+
+EllipseFrame frameOf(const PanelBody& body) {
+    return {.centre = body.position, .angle = body.angle, .a = body.semiAxisA, .b = body.semiAxisB};
+}
+
+Vec2 toBodyFrame(const EllipseFrame& e, Vec2 p) { return turned(p - e.centre, -e.angle); }
+
+// Eccentric anomaly η of a point (x = a cos η, y = b sin η for a point on the surface; the control
+// points lie on the chords, a little inside, at the same η as the middle of their arc).
+double eccentricAnomaly(const EllipseFrame& e, Vec2 p) {
+    const Vec2 q = toBodyFrame(e, p);
+    return std::atan2(q.y / e.b, q.x / e.a);
+}
+
+// Surface speed, stream V∞ at α to the a axis, circulation Γ (clockwise > 0):
+// |V| = |2V∞ sin(η − α) + Γ / π(a + b)| · ½(a + b) / √(a² sin²η + b² cos²η). For a = b it is the cylinder's.
+double ellipseSurfaceSpeed(const EllipseFrame& e, double speed, double alpha, double gamma, double eta) {
+    const double s = std::sin(eta);
+    const double c = std::cos(eta);
+    return std::abs(2.0 * speed * std::sin(eta - (alpha - e.angle)) + gamma / (pi * (e.a + e.b))) * 0.5 * (e.a + e.b) /
+           std::sqrt(e.a * e.a * s * s + e.b * e.b * c * c);
+}
+
+// Velocity outside the ellipse (a > b), no circulation: F = V∞ (a + b) cosh(w − ξ₀ − iα) with z = c cosh w,
+// so W = V∞ (a + b) sinh(w − ξ₀ − iα) / (c sinh w). α is the stream direction in the plot.
+Vec2 exactEllipse(const EllipseFrame& e, double speed, double alpha, Vec2 p) {
+    const Vec2 q = toBodyFrame(e, p);
+    const double c = std::sqrt(e.a * e.a - e.b * e.b);
+    const double xi0 = std::atanh(e.b / e.a);
+    const std::complex<double> w = std::acosh(std::complex<double>(q.x, q.y) / c);
+    const std::complex<double> big =
+        speed * (e.a + e.b) * std::sinh(w - xi0 - std::complex<double>(0.0, alpha - e.angle)) / (c * std::sinh(w));
+    return turned(Vec2{big.real(), -big.imag()}, e.angle);
+}
+
+// Outside the ellipse scaled up by `factor` about its centre.
+bool beyond(const EllipseFrame& e, Vec2 p, double factor) {
+    const Vec2 q = toBodyFrame(e, p);
+    return (q.x / e.a) * (q.x / e.a) + (q.y / e.b) * (q.y / e.b) >= factor * factor;
+}
+
+// The surface of the one panel body of a flow, if it has exactly one.
+std::optional<BodySurface> panelSurfaceOf(const FlowModel& model) {
+    const std::vector<BodySurface> bodies = findBodySurfaces(model, k_view);
+    if (bodies.size() != 1 || !bodies.front().panelBody) return std::nullopt;
+    return bodies.front();
+}
+
+// Largest |Cp − Cp_exact| over the control points of a panel ellipse (or circle) alone in a stream.
+std::optional<double> panelCpError(const Scene& scene, double gamma = 0.0) {
+    const FlowModel model = modelOf(scene);
+    const std::optional<BodySurface> body = panelSurfaceOf(model);
+    if (!body) return std::nullopt;
+    const EllipseFrame e = frameOf(model.field.panelBodies.front().body);
+    const double alpha = std::atan2(model.freeStream.y, model.freeStream.x);
+    double worst = 0.0;
+    for (std::size_t k = 0; k < body->points.size(); ++k) {
+        const double v = ellipseSurfaceSpeed(e, model.freeStreamSpeed, alpha, gamma, eccentricAnomaly(e, body->points[k]));
+        worst = std::max(worst, std::abs(body->cp[k] - (1.0 - v * v / (model.freeStreamSpeed * model.freeStreamSpeed))));
+    }
+    return worst;
+}
+
+Scene withPanels(Scene scene, int panels) {
+    for (SceneElement& element : scene.elements) {
+        if (auto* body = std::get_if<PanelBody>(&element)) body->panels = panels;
+    }
+    return scene;
+}
+
+void showSurface(PlotSettings& p) { p.showSurfacePressure = true; }
+
+Scene panelCylinderScene() { return withPlot({.elements = {UniformFlow{}, PanelBody{.panels = 8}}}, showSurface); }
+Scene panelEllipseScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg},
+                                  PanelBody{.semiAxisA = 2.0, .semiAxisB = 0.5, .angle = 10.0 * deg, .panels = 64}}},
+                    showSurface);
+}
+Scene panelLiftingScene() {
+    return withPlot({.elements = {UniformFlow{}, PanelBody{.panels = 64}, Vortex{.circulation = 2.0 * pi}}}, showSurface);
+}
+Scene panelBluffScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 15.0 * deg},
+                                  PanelBody{.shape = PanelShape::Rectangle, .position = {-1.6, -0.2}, .semiAxisA = 0.6,
+                                            .semiAxisB = 0.6, .panels = 48},
+                                  PanelBody{.position = {1.4, 0.4}, .semiAxisA = 1.0, .semiAxisB = 0.4, .angle = 30.0 * deg,
+                                            .panels = 48}}},
+                    showSurface);
+}
+
+// Observed order of convergence from two errors at N and 2N.
+double order(double coarse, double fine) { return std::log2(coarse / fine); }
+
+VerificationResult panelCylinder() {
+    VerificationResult r;
+    // Anderson's example: 8 panels, the first facing the stream.
+    const FlowModel eight = modelOf(panelCylinderScene());
+    if (eight.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+    const std::vector<double>& lambda = eight.field.panelBodies.front().strengths;
+    const auto ratio = [&](std::size_t j) {
+        const double x = lambda[j] / (2.0 * pi);
+        return std::format("{:.4f}", std::abs(x) < 5e-5 ? 0.0 : x);
+    };
+    r.comparisons.push_back({"N = 8: λ/2πV∞ on the panels facing the stream, at 45° and at the top",
+                             std::format("{}, {}, {}", ratio(0), ratio(1), ratio(2)), "0.3765, 0.2662, 0 (Anderson)"});
+
+    struct Case {
+        const char* name;
+        Scene scene;
+    };
+    const Case cases[] = {
+        {"N = 8, V∞ = 1 along x", panelCylinderScene()},
+        {"N = 40, a = 0.8 off the origin, V∞ = 1.3 at 30°",
+         {.elements = {UniformFlow{.speed = 1.3, .angle = 30.0 * deg},
+                       PanelBody{.position = {0.3, -0.2}, .semiAxisA = 0.8, .semiAxisB = 0.8, .angle = 11.0 * deg, .panels = 40}}}},
+        {"N = 9 (odd), V∞ = 1 along x", withPanels(panelCylinderScene(), 9)},
+    };
+    for (const Case& c : cases) {
+        const std::optional<double> error = panelCpError(c.scene);
+        if (!error) return unable(std::format("Expected one panel body: {}.", c.name));
+        r.error = std::max(r.error, *error);
+        r.samples += std::get<PanelBody>(c.scene.elements[1]).panels;
+        r.comparisons.push_back({std::format("{}: max |Cp − Cp_exact|", c.name), num(*error), "0"});
+    }
+    const std::optional<BodySurface> body = panelSurfaceOf(eight);
+    if (!body) return unable("Expected one panel body.");
+    r.comparisons.push_back({"N = 8: lowest Cp (at the top)", std::format("{:.6f}", *std::ranges::min_element(body->cp)),
+                             "−3 (1 − 4 sin² 90°: a control point lies at the top)"});
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points";
+    r.note = "On a regular polygon the constant-strength panels give the exact cylinder Cp at every control point, for any "
+             "N and any stream direction; between the control points and away from the surface they do not (see the "
+             "ellipse checks).";
+    return finish(std::move(r));
+}
+
+VerificationResult panelEllipse() {
+    VerificationResult r;
+    std::vector<double> errors;
+    for (const int n : {32, 64, 128, 256}) {
+        const std::optional<double> error = panelCpError(withPanels(panelEllipseScene(), n));
+        if (!error) return unable("Expected one panel body.");
+        errors.push_back(*error);
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: max |Cp − Cp_exact|", n), num(*error),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], *error))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points for N = 256";
+    r.note = "Constant-strength panels with midpoint collocation: the error falls about 4× each time N doubles "
+             "(second order). Most of it is at the pointed ends, where the curvature is largest.";
+    if (order(errors[2], errors[3]) < 1.7) {
+        r.error = inf;
+        r.note += " The observed order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+// The continuous source sheet on an ellipse that makes the exact outside flow. Its potential is
+// continuous, so inside it is the harmonic function with the outside surface values
+// 2V∞R cos(η − α), R = (a + b)/2: φ = 2V∞R (x cos α / a + y sin α / b), a uniform flow. The sheet
+// strength is the jump of v·n across it, outside (0) minus inside.
+double exactSheetStrength(const EllipseFrame& e, double speed, double alpha, double eta) {
+    const double local = alpha - e.angle;
+    const double radius = 0.5 * (e.a + e.b);
+    const Vec2 inside{2.0 * speed * radius * std::cos(local) / e.a, 2.0 * speed * radius * std::sin(local) / e.b};
+    const Vec2 gradient{std::cos(eta) / e.a, std::sin(eta) / e.b}; // of x²/a² + y²/b², along the outward normal
+    return -dot(inside, gradient) / length(gradient);
+}
+
+VerificationResult panelStrengths() {
+    VerificationResult r;
+    struct Case {
+        const char* name;
+        Scene scene;
+    };
+    const Case cases[] = {{"Circle", withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg}, PanelBody{}}},
+                                              showSurface)},
+                          {"4:1 ellipse", panelEllipseScene()}};
+    double worst = 0.0;
+    for (const Case& c : cases) {
+        std::vector<double> errors;
+        for (const int n : {50, 100, 200, 400}) {
+            const FlowModel model = modelOf(withPanels(c.scene, n));
+            if (model.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+            const SourcePanels& body = model.field.panelBodies.front();
+            const EllipseFrame e = frameOf(body.body);
+            const double alpha = std::atan2(model.freeStream.y, model.freeStream.x);
+            double error = 0.0;
+            for (std::size_t j = 0; j < body.size(); ++j) {
+                const double exact = exactSheetStrength(e, model.freeStreamSpeed, alpha, eccentricAnomaly(e, body.controlPoints[j]));
+                error = std::max(error, std::abs(body.strengths[j] - exact) / model.freeStreamSpeed);
+            }
+            errors.push_back(error);
+            r.samples += n;
+            r.comparisons.push_back({std::format("{}, N = {}: max |λ − λ_exact| / V∞", c.name, n), num(error),
+                                     errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], error))
+                                                       : std::string("—")});
+        }
+        worst = std::max(worst, errors.back());
+        if (order(errors[2], errors[3]) < 0.8) {
+            r.error = inf;
+            r.note = std::format("{}: the observed order is below 0.8. ", c.name);
+        }
+    }
+    if (std::isfinite(r.error)) r.error = worst;
+    r.tolerance = 0.05;
+    r.errorLabel = "max |λ − λ_exact| / V∞ for N = 400";
+    r.note += "The strengths converge at first order: on a circle λ = −2V∞ cos(θ − α), but 8 panels give 2.366 V∞ on the "
+              "panel facing the stream, 18% high. The Cp at the control points converges faster (second order, and exactly "
+              "on a circle).";
+    return finish(std::move(r));
+}
+
+VerificationResult panelSums() {
+    // Each panel on its own: W = (λ/2π) conj(t) log((z − z₁)/(z − z₂)), summed directly.
+    const FlowModel model = modelOf(panelBluffScene());
+    if (model.field.panelBodies.size() != 2) return unable("Expected two panel bodies.");
+    VerificationResult r;
+    double nearError = 0.0;
+    double farError = 0.0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            for (const SourcePanels& body : model.field.panelBodies) {
+                if (body.contains(p)) continue;
+                const std::size_t n = body.size();
+                std::complex<double> direct{};
+                for (std::size_t k = 0; k < n; ++k) {
+                    const Vec2 z1 = body.vertices[k];
+                    const Vec2 z2 = body.vertices[(k + 1) % n];
+                    const std::complex<double> t = std::complex<double>(z2.x - z1.x, z2.y - z1.y) / length(z2 - z1);
+                    const std::complex<double> ratio = std::complex<double>(p.x - z1.x, p.y - z1.y) /
+                                                       std::complex<double>(p.x - z2.x, p.y - z2.y);
+                    direct += body.strengths[k] / (2.0 * pi) * std::conj(t) * std::log(ratio);
+                }
+                const double error = std::abs(body.complexVelocity(p) - direct);
+                (length(p - body.centre) > 2.0 * body.radius ? farError : nearError) =
+                    std::max(length(p - body.centre) > 2.0 * body.radius ? farError : nearError, error);
+                ++r.samples;
+            }
+        }
+    }
+    r.error = std::max(nearError, farError);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |W − W_direct| / V∞ over every node outside the bodies";
+    r.comparisons = {{"Nearer than 2 radii (logarithms by vertex)", num(nearError), "0"},
+                     {"Farther (Laurent series)", num(farError), "0"}};
+    r.note = std::format("{} evaluations, two bodies of 48 panels each (a square and an ellipse).", count(r.samples));
+    return finish(std::move(r));
+}
+
+VerificationResult panelField() {
+    VerificationResult r;
+    const Scene base = panelEllipseScene();
+    const EllipseFrame e = frameOf(std::get<PanelBody>(base.elements[1]));
+    std::vector<double> errors;
+    for (const int n : {50, 100, 200}) {
+        const FlowModel model = modelOf(withPanels(base, n));
+        double worst = 0.0;
+        int nodes = 0;
+        for (int j = 0; j < k_gridRows; ++j) {
+            for (int i = 0; i < k_gridColumns; ++i) {
+                const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+                if (!beyond(e, p, 1.25)) continue;
+                worst = std::max(worst, length(model.field.velocity(p) - exactEllipse(e, 1.0, 20.0 * deg, p)));
+                ++nodes;
+            }
+        }
+        errors.push_back(worst);
+        r.samples += nodes;
+        r.comparisons.push_back({std::format("N = {}: max |V − V_exact| / V∞", n), num(worst),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], worst))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-2;
+    r.errorLabel = "max |V − V_exact| / V∞ for N = 200, over the nodes outside 1.25 times the ellipse";
+    r.note = "The exact flow is the conformal map of the cylinder flow. The field converges only at first order, slower than "
+             "the surface Cp: constant-strength panels misjudge the strengths by O(1/N) (the 8-panel cylinder's first "
+             "strength is 18% above 2V∞), which shows in the body's far field.";
+    if (order(errors[1], errors[2]) < 0.8) {
+        r.error = inf;
+        r.note += " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelLifting() {
+    VerificationResult r;
+    std::vector<double> errors;
+    for (const int n : {64, 128, 256}) {
+        const Scene scene = withPanels(panelLiftingScene(), n);
+        const std::optional<double> cpError = panelCpError(scene, 2.0 * pi);
+        const FlowModel model = modelOf(scene);
+        const std::optional<BodySurface> body = panelSurfaceOf(model);
+        if (!cpError || !body) return unable("Expected one panel body.");
+        const BodyForces forces = bodyForces(*body, model);
+        const double liftError = std::abs(forces.lift - 4.0 * pi) / (4.0 * pi);
+        errors.push_back(std::max(*cpError, liftError));
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: L′/q∞ and max |Cp − Cp_exact|", n),
+                                 std::format("{:.5f}, {}", forces.lift, num(*cpError)), "2Γ/V∞ = 4π = 12.56637, 0"});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "max of |Cp − Cp_exact| and the relative lift error, for N = 256";
+    r.note = "A vortex Γ = 2π at the centre of a source-panel circle: the panels cancel the stream's flow through the surface "
+             "and the vortex adds the circulation, which is the lifting cylinder. Both errors fall at second order. Nothing "
+             "in the source panel method fixes Γ; a vortex panel method sets it with the Kutta condition.";
+    if (order(errors[1], errors[2]) < 1.7) {
+        r.error = inf;
+        r.note += " The observed order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelBoundary() {
+    VerificationResult r;
+    // The boundary condition, on bodies that feel each other.
+    const FlowModel pair = modelOf(panelBluffScene());
+    if (pair.field.panelBodies.size() != 2) return unable("Expected two panel bodies.");
+    double residual = 0.0;
+    for (const SourcePanels& body : pair.field.panelBodies) {
+        for (std::size_t i = 0; i < body.size(); ++i) {
+            residual = std::max(residual, std::abs(dot(pair.field.velocity(body.controlPoints[i]), body.normals[i])));
+            ++r.samples;
+        }
+    }
+    r.comparisons.push_back({"Square and ellipse together: max |v·n| / V∞ at the control points", num(residual), "0"});
+
+    // d'Alembert, alone in the stream. Both shapes are symmetric about their centre, and so is the
+    // panel solution, so the pressure forces on opposite panels cancel exactly.
+    double force = 0.0;
+    double source = 0.0;
+    for (std::size_t b = 1; b <= 2; ++b) {
+        const Scene alone{.elements = {panelBluffScene().elements[0], panelBluffScene().elements[b]}};
+        const FlowModel model = modelOf(alone);
+        const std::optional<BodySurface> body = panelSurfaceOf(model);
+        if (!body) return unable("Expected one panel body.");
+        const BodyForces forces = bodyForces(*body, model);
+        const SourcePanels& panels = model.field.panelBodies.front();
+        const double net = std::abs(panels.netSource) / panels.perimeter();
+        force = std::max({force, std::abs(forces.drag) / forces.chord, std::abs(forces.lift) / forces.chord});
+        source = std::max(source, net);
+        r.comparisons.push_back({std::format("{} alone: D′/q∞, L′/q∞", b == 1 ? "Square" : "Ellipse at 15° to the stream"),
+                                 std::format("{}, {}", num(forces.drag), num(forces.lift)), "0, 0"});
+        r.comparisons.push_back({std::format("{} alone: Σλs / V∞ perimeter", b == 1 ? "Square" : "Ellipse"), num(net), "0"});
+    }
+    r.error = std::max({residual, force, source});
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |v·n| / V∞ at the control points, |D′|/q∞c and |L′|/q∞c alone, and |Σλs| / V∞ perimeter";
+    r.note = "The strengths come from a direct solve, so the condition holds to rounding at every control point. Σλs is the "
+             "check Anderson suggests: a closed body adds no fluid.";
+    return finish(std::move(r));
+}
+
+
 // --- The list -----------------------------------------------------------------------------
 
 constexpr const char* k_foundations = "Foundations";
@@ -1964,6 +2340,7 @@ constexpr const char* k_walls = "Symmetry walls";
 constexpr const char* k_forces = "Pressure and forces";
 constexpr const char* k_lines = "Streamlines and equipotentials";
 constexpr const char* k_tracers = "Particles and dye";
+constexpr const char* k_panels = "Panel methods";
 
 const VerificationCheck k_checks[] = {
     {k_foundations, "Laplace's equation",
@@ -2163,6 +2540,44 @@ const VerificationCheck k_checks[] = {
      "apart for a release interval Δt, so the spacing shows the speed.",
      "Run the dye system in a uniform flow and past a lifting cylinder, and check positions, spacing and ψ along the streaks.",
      dyeScene, dyeStreaks},
+
+    {k_panels, "Source panels on a cylinder",
+     "Source sheets of strength λ around a circle in a stream give Cp = 1 − 4 sin²θ on it. Cut into N straight panels of "
+     "constant strength, the 8-panel solution has λ/2πV∞ = 0.3765 on the panel facing the stream (Anderson's example).",
+     "Solve 8, 9 and 40 panels, the last at 30° incidence off the origin, and compare Cp at every control point.",
+     panelCylinderScene, panelCylinder},
+    {k_panels, "Source panels on an ellipse",
+     "The flow past an ellipse is the cylinder flow under the map z = ζ + k²/ζ: on the surface V = V∞ (a + b) |sin(η − α)| / "
+     "√(a² sin²η + b² cos²η).",
+     "A 4:1 ellipse at 20° to the stream with 32 to 256 panels: Cp at every control point, and the order of convergence.",
+     panelEllipseScene, panelEllipse},
+    {k_panels, "Source strengths",
+     "A continuous source sheet on an ellipse that makes the exact flow outside has λ = −v·n of the uniform flow it leaves "
+     "inside, (2V∞R cos α / a, 2V∞R sin α / b) with R = (a + b)/2. On a circle that is λ = −2V∞ cos(θ − α).",
+     "Compare the strength of every panel of a circle and of a 4:1 ellipse, with 50 to 400 panels, and the order of "
+     "convergence.",
+     panelEllipseScene, panelStrengths},
+    {k_panels, "Panel sums, near and far",
+     "Each panel contributes W = (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)), θ the panel's direction. The program regroups the "
+     "logarithms by vertex, and beyond two body radii sums a Laurent series instead.",
+     "Sum every panel directly at every node outside two bodies (a square and an ellipse) and compare.", panelBluffScene,
+     panelSums},
+    {k_panels, "Flow field around a panel body",
+     "Away from the surface too the panel solution must approach the exact flow, F = V∞ (a + b) cosh(w − ξ₀ − iα) with "
+     "z = c cosh w.",
+     "Compare every node outside 1.25 times the ellipse with the exact velocity, for 50, 100 and 200 panels.",
+     panelEllipseScene, panelField},
+    {k_panels, "Lifting cylinder from source panels",
+     "Source panels carry no circulation, but a vortex inside the body gives it some: around a circle that is the lifting "
+     "cylinder, Cp = 1 − (2 sin θ + Γ/2πaV∞)² and L′ = ρV∞Γ.",
+     "A vortex Γ = 2π inside a panel circle, with 64 to 256 panels: Cp at the control points and the lift from it.",
+     panelLiftingScene, panelLifting},
+    {k_panels, "No flow through the panels",
+     "The strengths are chosen so that no fluid crosses any panel at its control point. A closed body adds no fluid "
+     "(Σλs = 0) and, alone in a stream, feels no force (d'Alembert).",
+     "Check v·n at every control point of a square and an ellipse that feel each other, and the force and Σλs of each "
+     "alone.",
+     panelBluffScene, panelBoundary},
 };
 
 } // namespace

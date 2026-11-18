@@ -1,0 +1,9 @@
+{
+  "format": "pfl-scene",
+  "version": 1,
+  "elements": [
+    {"type": "uniform", "speed": 1, "alpha_deg": 0},
+    {"type": "source_panels", "shape": "ellipse", "x": 0, "y": 0, "a": 1, "b": 1, "angle_deg": 0, "panels": 8}
+  ],
+  "plot": {"x_min": -4, "x_max": 4, "y_min": -2.5, "y_max": 2.5, "streamline_density": 24, "arrows": true, "arrow_spacing_px": 110, "show_images": true, "particles": true, "particle_trails": true, "surface_pressure": true, "panel_strengths": true}
+}

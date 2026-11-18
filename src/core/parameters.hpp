@@ -14,8 +14,9 @@
 
 namespace pfl {
 
-// What a parameter measures; the UI picks the slider range and units from it.
-enum class ParameterKind { Speed, Strength, Angle, X, Y };
+// What a parameter measures; the UI picks the slider range and units from it. Length: a positive
+// size; Count: a whole number (set() rounds what it is given).
+enum class ParameterKind { Speed, Strength, Angle, X, Y, Length, Count };
 
 struct ElementParameter {
     const char* label; // UTF-8 symbol, e.g. "Γ", "x₀", "α"

@@ -13,7 +13,11 @@ pfl_embed_resources(pfl_examples
         examples/channel_source.json
         examples/source_sink_vortex.json
         examples/corner_flow_90deg.json
-        examples/flat_plate_edge.json)
+        examples/flat_plate_edge.json
+        examples/panel_cylinder.json
+        examples/panel_ellipse.json
+        examples/panel_lifting_cylinder.json
+        examples/panel_bluff_bodies.json)
 
 add_library(pfl_io STATIC
     scene_io.hpp scene_io.cpp

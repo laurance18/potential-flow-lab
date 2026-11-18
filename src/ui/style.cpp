@@ -108,6 +108,24 @@ void drawToolIcon(ImDrawList* dl, ImVec2 c, float size, ElementKind kind) {
         drawArrowHead(dl, c + ImVec2(0.85f * h, -0.45f * h), ImVec2(1.0f, 0.0f), 0.25f * h, k_uniformColor);
         break;
     }
+    case ElementKind::PanelBody: {
+        // An ellipse cut into straight panels, each with a small source arrow out of its midpoint.
+        constexpr int panels = 10;
+        std::array<ImVec2, panels> v;
+        for (int k = 0; k < panels; ++k) v[static_cast<std::size_t>(k)] = c + ImVec2(0.62f * h * std::cos(k * 2.0f * k_pi / panels), 0.4f * h * std::sin(k * 2.0f * k_pi / panels));
+        dl->AddConvexPolyFilled(v.data(), panels, k_panelFillColor);
+        dl->AddPolyline(v.data(), panels, k_panelColor, ImDrawFlags_Closed, 1.6f * s);
+        for (int k = 0; k < panels; k += 2) {
+            const ImVec2 a = v[static_cast<std::size_t>(k)];
+            const ImVec2 b = v[static_cast<std::size_t>((k + 1) % panels)];
+            const ImVec2 m = (a + b) * 0.5f;
+            ImVec2 n(b.y - a.y, a.x - b.x); // outward: the points run clockwise on screen (y down)
+            n = n / std::sqrt(n.x * n.x + n.y * n.y);
+            dl->AddLine(m, m + n * (0.22f * h), k_sourceColor, 1.3f * s);
+            drawArrowHead(dl, m + n * (0.38f * h), n, 0.18f * h, k_sourceColor);
+        }
+        break;
+    }
     }
 }
 

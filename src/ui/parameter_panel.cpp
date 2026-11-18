@@ -50,6 +50,12 @@ std::pair<double, double> defaultRange(ParameterKind kind, double value, const R
     }
     case ParameterKind::X: r = {view.min.x, view.max.x}; break;
     case ParameterKind::Y: r = {view.min.y, view.max.y}; break;
+    case ParameterKind::Length: {
+        const double high = niceCeil(2.0 * std::max(value, 1.0));
+        r = {0.01 * high, high};
+        break;
+    }
+    case ParameterKind::Count: r = {static_cast<double>(k_minPanels), std::max(200.0, value)}; break;
     }
     return {std::min(r.first, value), std::max(r.second, value)};
 }
@@ -171,8 +177,8 @@ bool ParameterPanel::drawSlider(ParameterRef ref, const ElementParameter& parame
     const double low = toDisplay(parameter, r.low);
     const double high = toDisplay(parameter, r.high);
     ImGui::BeginDisabled(swept && m_playing);
-    const bool changed = ImGui::SliderScalar("##value", ImGuiDataType_Double, &shown, &low, &high,
-                                             isAngle(parameter) ? "%.1f°" : "%.4g");
+    const char* format = isAngle(parameter) ? "%.1f°" : parameter.kind == ParameterKind::Count ? "%.0f" : "%.4g";
+    const bool changed = ImGui::SliderScalar("##value", ImGuiDataType_Double, &shown, &low, &high, format);
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("%s\n%s", parameter.help,
                           swept && m_playing ? "The sweep is moving it; stop the sweep to set it here."

@@ -51,6 +51,16 @@ json elementToJson(const SceneElement& element) {
             [](const SymmetryWall& e) -> json {
                 return {{"type", "wall"}, {"x", e.point.x}, {"y", e.point.y}, {"angle_deg", e.angle * k_degrees}};
             },
+            [](const PanelBody& e) -> json {
+                return {{"type", "source_panels"},
+                        {"shape", shapeName(e.shape)},
+                        {"x", e.position.x},
+                        {"y", e.position.y},
+                        {"a", e.semiAxisA},
+                        {"b", e.semiAxisB},
+                        {"angle_deg", e.angle * k_degrees},
+                        {"panels", e.panels}};
+            },
         },
         element);
 }
@@ -73,6 +83,18 @@ SceneElement elementFromJson(const json& j) {
                           .wall2 = num("theta2_deg") / k_degrees};
     }
     if (type == "wall") return SymmetryWall{.point = point(), .angle = num("angle_deg") / k_degrees};
+    if (type == "source_panels") {
+        const std::string shape = j.at("shape").get<std::string>();
+        PanelBody body{.position = point(),
+                       .semiAxisA = num("a"),
+                       .semiAxisB = num("b"),
+                       .angle = j.value("angle_deg", 0.0) / k_degrees,
+                       .panels = j.at("panels").get<int>()};
+        if (shape == shapeName(PanelShape::Ellipse)) body.shape = PanelShape::Ellipse;
+        else if (shape == shapeName(PanelShape::Rectangle)) body.shape = PanelShape::Rectangle;
+        else throw std::runtime_error("unknown panel body shape \"" + shape + "\"");
+        return body;
+    }
     throw std::runtime_error("unknown element type \"" + type + "\"");
 }
 
@@ -99,6 +121,7 @@ json plotToJson(const PlotSettings& p) {
             {"background", backgroundName(p.background)},
             {"surface_pressure", p.showSurfacePressure},
             {"stagnation_points", p.showStagnationPoints},
+            {"panel_strengths", p.showPanelStrengths},
             {"particles", p.showParticles},
             {"particle_trails", p.particleTrails}};
 }
@@ -124,6 +147,7 @@ PlotSettings plotFromJson(const json& j) {
     }
     p.showSurfacePressure = j.value("surface_pressure", p.showSurfacePressure);
     p.showStagnationPoints = j.value("stagnation_points", p.showStagnationPoints);
+    p.showPanelStrengths = j.value("panel_strengths", p.showPanelStrengths);
     p.showParticles = j.value("particles", p.showParticles);
     p.particleTrails = j.value("particle_trails", p.particleTrails);
     return p;

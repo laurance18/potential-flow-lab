@@ -39,6 +39,7 @@ ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake) {
         return (min + max) * 0.5f;
     };
     for (const ElementKind kind : k_elementKinds) {
+        if (isPanelKind(kind) && !isPanelKind(k_elementKinds[static_cast<std::size_t>(kind) - 1])) ImGui::Separator(); // panel methods
         ImGui::PushID(static_cast<int>(kind));
         if (ImGui::InvisibleButton("##tool", ImVec2(button, button))) action.element = kind;
         drawToolIcon(dl, buttonBackground(false), 0.78f * button, kind);

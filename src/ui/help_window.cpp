@@ -652,6 +652,11 @@ void HelpWindow::drawConventions() {
              "wall. Sector flows are not mirrored. Walls at 180°/k to each other and parallel walls (a channel) "
              "are exact; other layouts are truncated and the status bar says so.",
              "F + F_image", "W + W_image"},
+            {"Source-panel body",
+             "An ellipse (a circle when a = b) or rectangle with semi-axes a, b, centre z₀ and rotation θ, cut into N "
+             "straight panels numbered clockwise. Panel j from z₁ to z₂ in direction e^(iθ_j) is a source sheet of "
+             "strength λ_j (> 0 pushes fluid out); the λ_j are solved so that v·n = 0 at every panel midpoint.",
+             "Σ (λ_j/2π) ∫ ln(z − z′) ds′ along panel j", "Σ (λ_j/2π) e^(−iθ_j) ln((z − z₁)/(z − z₂))"},
         };
         for (std::size_t r = 0; r < std::size(k_rows); ++r) {
             ImGui::TableNextRow(r == 0 ? ImGuiTableRowFlags_Headers : ImGuiTableRowFlags_None);

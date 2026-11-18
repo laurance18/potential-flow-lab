@@ -51,6 +51,29 @@ double freeStreamSpeed(const Scene& scene) {
     return std::abs(w);
 }
 
+void drawPanelBodyFields(PanelBody& body) {
+    int shape = static_cast<int>(body.shape);
+    ImGui::SetNextItemWidth(170.0f * uiScale());
+    if (ImGui::Combo("Shape", &shape, "Ellipse (circle when a = b)\0Rectangle\0")) {
+        body.shape = static_cast<PanelShape>(shape);
+        if (body.shape == PanelShape::Rectangle && body.panels % 2 != 0) ++body.panels;
+    }
+    const bool rectangle = body.shape == PanelShape::Rectangle;
+    inputValue(rectangle ? "Half-width a" : "Semi-axis a", body.semiAxisA,
+               "Half the length along the body's own x axis (a circle's radius when a = b)");
+    inputValue(rectangle ? "Half-height b" : "Semi-axis b", body.semiAxisB, "Half the length across the body's own x axis");
+    inputPoint(body.position, "body's centre");
+    inputAngle("Rotation θ [°]", body.angle, "Turns the body counter-clockwise about its centre");
+    ImGui::SetNextItemWidth(170.0f * uiScale());
+    ImGui::InputInt("Panels N", &body.panels, rectangle ? 2 : 1, 10);
+    ImGui::SetItemTooltip("Number of straight source panels around the surface (%d to %d%s)", k_minPanels, k_maxPanels,
+                          rectangle ? ", even" : "");
+    note("Source panel method: the surface is cut into N straight panels, each a source sheet of its own constant strength λ. "
+         "The strengths are solved so that no fluid crosses any panel at its midpoint (the control point), in the flow "
+         "of all the other elements. The body is non-lifting: add a vortex inside it to give it circulation. Inside "
+         "the body the flow is not shown. More panels: closer to the exact solution.");
+}
+
 void drawFields(SceneElement& element, const Scene& scene) {
     if (auto* uniform = std::get_if<UniformFlow>(&element)) {
         inputValue("Speed U∞", uniform->speed, "Free-stream speed (not negative)");
@@ -85,6 +108,8 @@ void drawFields(SceneElement& element, const Scene& scene) {
                              "restriction, so they generally cross the wedge walls.",
                              sector->opening() * k_degrees, sector->exponent()));
         }
+    } else if (auto* body = std::get_if<PanelBody>(&element)) {
+        drawPanelBodyFields(*body);
     } else if (auto* wall = std::get_if<SymmetryWall>(&element)) {
         inputPoint(wall->point, "point on the wall");
         inputAngle("Angle φ [°]", wall->angle, "Direction of the wall line, counter-clockwise from +x");
@@ -139,11 +164,12 @@ std::optional<ElementEdit> ParameterDialog::draw(const Scene& scene) {
         ImGui::PopStyleColor();
     } else {
         // Warnings this change would introduce.
-        const std::vector<std::string> before = sceneWarnings(scene, buildFlowModel(scene));
+        // The warnings do not depend on the panel solution, so the panels are not solved here.
+        const std::vector<std::string> before = sceneWarnings(scene, buildFlowModel(scene, false));
         const Scene after = applyEdit(scene, edit);
         ImGui::PushStyleColor(ImGuiCol_Text, k_warningColor);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f * uiScale());
-        for (const std::string& warning : sceneWarnings(after, buildFlowModel(after))) {
+        for (const std::string& warning : sceneWarnings(after, buildFlowModel(after, false))) {
             if (std::ranges::find(before, warning) == before.end()) ImGui::TextWrapped("%s", warning.c_str());
         }
         ImGui::PopTextWrapPos();

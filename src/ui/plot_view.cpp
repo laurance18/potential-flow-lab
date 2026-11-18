@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,65 @@ void drawMask(ImDrawList* dl, const FlowField& field, ImVec2 pos, ImVec2 size) {
             }
         }
     }
+}
+
+// Source-panel bodies as solids, with their panel vertices marked while they are far enough apart
+// to show the discretization.
+void drawPanelBodies(ImDrawList* dl, const FlowField& field) {
+    const float s = uiScale();
+    std::vector<ImVec2> pixels;
+    for (const SourcePanels& body : field.panelBodies) {
+        pixels.resize(body.vertices.size());
+        std::ranges::transform(body.vertices, pixels.begin(), toPixels);
+        const int n = static_cast<int>(pixels.size());
+        // Both shapes are convex, as the fill needs. The vertices are clockwise in the plot, so
+        // counter-clockwise on screen (y down), and ImGui's anti-aliased fill wants them clockwise.
+        std::vector<ImVec2> reversed(pixels.rbegin(), pixels.rend());
+        dl->AddConvexPolyFilled(reversed.data(), n, k_panelFillColor);
+        dl->AddPolyline(pixels.data(), n, k_panelColor, ImDrawFlags_Closed, 1.5f * s);
+        float shortest = 1e30f;
+        for (int k = 0; k < n; ++k) {
+            const ImVec2 d = pixels[static_cast<std::size_t>((k + 1) % n)] - pixels[static_cast<std::size_t>(k)];
+            shortest = std::min(shortest, std::sqrt(d.x * d.x + d.y * d.y));
+        }
+        if (shortest < 7.0f * s) continue;
+        for (const ImVec2 p : pixels) dl->AddCircleFilled(p, 1.8f * s, k_panelColor);
+    }
+}
+
+// The source strength of every panel: a stick from its control point along the outward normal,
+// outwards for a source (lambda > 0) and inwards for a sink, its length proportional to |lambda| (the
+// largest of all the panels gets k_strengthStickPx), and a line through the tips: the strength
+// distribution as a polar plot around the body. `hovered` (body, panel) is highlighted. Returns the
+// pixels per unit of lambda, for the caption.
+constexpr float k_strengthStickPx = 42.0f;
+float drawPanelStrengths(ImDrawList* dl, const FlowField& field, std::optional<std::pair<std::size_t, std::size_t>> hovered) {
+    const float s = uiScale();
+    double largest = 0.0;
+    for (const SourcePanels& body : field.panelBodies) {
+        for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
+    }
+    if (!(largest > 0.0)) return 0.0f;
+    const float perUnit = k_strengthStickPx * s / static_cast<float>(largest);
+    std::vector<ImVec2> tips;
+    for (std::size_t b = 0; b < field.panelBodies.size(); ++b) {
+        const SourcePanels& body = field.panelBodies[b];
+        tips.clear();
+        for (std::size_t j = 0; j < body.size(); ++j) {
+            const double lambda = body.strengths[j];
+            const ImVec2 base = toPixels(body.controlPoints[j]);
+            // Screen y points down.
+            const ImVec2 out = normalized({static_cast<float>(body.normals[j].x), static_cast<float>(-body.normals[j].y)});
+            const ImVec2 tip = base + out * (static_cast<float>(lambda) * perUnit);
+            const bool highlight = hovered && hovered->first == b && hovered->second == j;
+            const ImU32 colour = lambda >= 0.0 ? k_sourceColor : k_sinkColor;
+            dl->AddLine(base, tip, highlight ? k_highlightColor : fadeColor(colour, 0.85f), (highlight ? 3.0f : 1.8f) * s);
+            dl->AddCircleFilled(tip, (highlight ? 3.5f : 2.0f) * s, highlight ? k_highlightColor : colour);
+            tips.push_back(tip);
+        }
+        dl->AddPolyline(tips.data(), static_cast<int>(tips.size()), IM_COL32(235, 235, 235, 150), ImDrawFlags_Closed, 1.2f * s);
+    }
+    return perUnit;
 }
 
 // Colour of band `band` (0 lowest): Viridis for |V|, the diverging pressure scale for Cp.
@@ -180,7 +240,8 @@ void drawContourScale(ImDrawList* dl, const ContourMap& map, ImVec2 plotPos, ImV
 // Body surfaces coloured by Cp, with arrows normal to the surface: towards it where Cp > 0
 // (pressure above the free-stream value pushes on the body) and away from it where Cp < 0 (suction).
 // Arrow length is proportional to |Cp|, the largest |Cp| on any body getting the longest arrow.
-void drawSurfaces(ImDrawList* dl, const SurfaceLayer& layer) {
+// A panel body is drawn panel by panel, each in the colour of the Cp at its control point.
+void drawSurfaces(ImDrawList* dl, const SurfaceLayer& layer, const FlowField& field) {
     const float s = uiScale();
     const float minGap = 2.0f * s;        // drawn vertices at least this far apart
     const float arrowSpacing = 24.0f * s; // along the surface
@@ -190,39 +251,60 @@ void drawSurfaces(ImDrawList* dl, const SurfaceLayer& layer) {
         for (const double cp : body.cp) largest = std::max(largest, std::abs(cp));
     }
     const float pixelsPerCp = largest > 0.0 ? maxArrow / static_cast<float>(largest) : 0.0f;
-    std::vector<std::size_t> kept;
-    std::vector<ImVec2> pixels;
+
+    struct Segment {
+        ImVec2 a;
+        ImVec2 b;
+        double cp;
+        Vec2 normal; // outward, in the plot (any length)
+    };
+    std::vector<ImVec2> pixels; // the outline, for the casing
+    std::vector<Segment> segments;
     for (std::size_t b = 0; b < layer.bodies.size(); ++b) {
         const BodySurface& body = layer.bodies[b];
         if (body.points.size() < 2) continue;
-        kept.assign(1, 0);
-        pixels.assign(1, toPixels(body.points.front()));
-        for (std::size_t k = 1; k < body.points.size(); ++k) {
-            const ImVec2 p = toPixels(body.points[k]);
-            const ImVec2 d = p - pixels.back();
-            if (d.x * d.x + d.y * d.y < minGap * minGap && k + 1 < body.points.size()) continue;
-            kept.push_back(k);
-            pixels.push_back(p);
+        pixels.clear();
+        segments.clear();
+        if (body.panelBody && *body.panelBody < field.panelBodies.size()) {
+            const SourcePanels& panels = field.panelBodies[*body.panelBody];
+            const std::size_t n = panels.size();
+            for (std::size_t k = 0; k < n && k < body.cp.size(); ++k) {
+                const std::size_t j = (body.firstPanel + k) % n;
+                const ImVec2 a = toPixels(panels.vertices[j]);
+                if (k == 0) pixels.push_back(a);
+                const ImVec2 c = toPixels(panels.vertices[(j + 1) % n]);
+                pixels.push_back(c);
+                segments.push_back({a, c, body.cp[k], panels.normals[j]});
+            }
+        } else {
+            std::size_t last = 0;
+            pixels.push_back(toPixels(body.points.front()));
+            for (std::size_t k = 1; k < body.points.size(); ++k) {
+                const ImVec2 p = toPixels(body.points[k]);
+                const ImVec2 d = p - pixels.back();
+                if (d.x * d.x + d.y * d.y < minGap * minGap && k + 1 < body.points.size()) continue;
+                // perp of the world direction is the outward normal.
+                segments.push_back({pixels.back(), p, 0.5 * (body.cp[last] + body.cp[k]), perp(body.points[k] - body.points[last])});
+                pixels.push_back(p);
+                last = k;
+            }
         }
 
         // A light casing keeps the surface visible on the Cp bands, which share its colours.
         dl->AddPolyline(pixels.data(), static_cast<int>(pixels.size()), k_surfaceCasingColor, ImDrawFlags_None, 6.5f * s);
         float along = 0.5f * arrowSpacing;
-        for (std::size_t i = 0; i + 1 < kept.size(); ++i) {
-            const double cp = 0.5 * (body.cp[kept[i]] + body.cp[kept[i + 1]]);
-            const ImU32 colour = pressureColor(cp, layer.lowestCp);
-            dl->AddLine(pixels[i], pixels[i + 1], colour, 3.5f * s);
-
-            const ImVec2 d = pixels[i + 1] - pixels[i];
+        for (const Segment& segment : segments) {
+            dl->AddLine(segment.a, segment.b, pressureColor(segment.cp, layer.lowestCp), 3.5f * s);
+            const ImVec2 d = segment.b - segment.a;
             along += std::sqrt(d.x * d.x + d.y * d.y);
             if (along < arrowSpacing) continue;
             along = 0.0f;
+            const double cp = segment.cp;
             const float size = static_cast<float>(std::abs(cp)) * pixelsPerCp;
             if (size < 4.0f * s) continue;
-            // perp of the world direction is the outward normal; screen y points down.
-            const Vec2 n = perp(body.points[kept[i + 1]] - body.points[kept[i]]);
-            const ImVec2 out = normalized({static_cast<float>(n.x), static_cast<float>(-n.y)});
-            const ImVec2 base = pixels[i] + out * (3.0f * s);
+            // Screen y points down.
+            const ImVec2 out = normalized({static_cast<float>(segment.normal.x), static_cast<float>(-segment.normal.y)});
+            const ImVec2 base = (body.panelBody ? (segment.a + segment.b) * 0.5f : segment.a) + out * (3.0f * s);
             const ImVec2 tip = cp > 0.0 ? base : base + out * size;
             const ImVec2 tail = cp > 0.0 ? base + out * size : base;
             const ImVec2 dir = cp > 0.0 ? out * -1.0f : out;
@@ -406,6 +488,13 @@ void drawMarker(ImDrawList* dl, const SceneElement& element, const Rect& limits,
             }
         }
         dl->AddCircleFilled(toPixels(sector->vertex), 4.5f * s, colour);
+    } else if (const auto* body = std::get_if<PanelBody>(&element)) {
+        // The body itself is drawn with the flow (drawPanelBodies); this is its centre, which drags it.
+        const ImVec2 c = toPixels(body->position);
+        const ImU32 colour = fadeColor(k_panelColor, alpha);
+        dl->AddCircle(c, 4.5f * s, colour, 0, 1.5f * s);
+        dl->AddLine({c.x - 7.0f * s, c.y}, {c.x + 7.0f * s, c.y}, colour, 1.2f * s);
+        dl->AddLine({c.x, c.y - 7.0f * s}, {c.x, c.y + 7.0f * s}, colour, 1.2f * s);
     } else if (const auto* wall = std::get_if<SymmetryWall>(&element)) {
         double t0 = -1e300;
         double t1 = 1e300;
@@ -437,8 +526,15 @@ void drawUniformMarker(ImDrawList* dl, const UniformFlow& flow, ImVec2 anchor, s
     dl->AddText(anchor + ImVec2(22.0f * s, -0.5f * ImGui::GetFontSize()), k_uniformColor, label.c_str());
 }
 
-// Screen distance from the mouse to an element's marker (walls: to the line).
+// Screen distance from the mouse to an element's marker (walls: to the line). A panel body can be
+// grabbed anywhere inside it, though a marker on it (a vortex inside, say) is closer.
 float hitDistance(const SceneElement& element, ImVec2 mouse, const Rect& limits) {
+    if (const auto* body = std::get_if<PanelBody>(&element)) {
+        const ImVec2 d = toPixels(body->position) - mouse;
+        const float centre = std::sqrt(d.x * d.x + d.y * d.y);
+        const bool inside = !panelBodyError(*body) && insidePolygon(panelVertices(*body), toWorld(mouse));
+        return inside ? std::min(centre, 0.9f * k_hitRadiusPx * uiScale()) : centre;
+    }
     if (const auto* e = std::get_if<SymmetryWall>(&element)) {
         double t0 = -1e300;
         double t1 = 1e300;
@@ -594,11 +690,67 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             if (particles.beginBlend != nullptr) dl->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, nullptr);
         }
 
+        drawPanelBodies(dl, model.field);
         drawStreamlines(dl, layers.equipotentials, false, k_equipotentialColor, 1.0f);
         drawStreamlines(dl, layers.streamlines, scene.plot.showArrows);
         drawDye(dl, layers.dye);
         drawDividingStreamlines(dl, layers.dividingLines, scene.plot.showArrows);
-        drawSurfaces(dl, layers.surfaces);
+        drawSurfaces(dl, layers.surfaces, model.field);
+
+        // The panel whose strength stick is under the mouse (body, panel).
+        std::optional<std::pair<std::size_t, std::size_t>> panelHit;
+        const bool showStrengths = scene.plot.showPanelStrengths && !model.field.panelBodies.empty();
+        if (showStrengths && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake) {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            float best = 0.6f * k_hitRadiusPx * uiScale();
+            double largest = 0.0;
+            for (const SourcePanels& body : model.field.panelBodies) {
+                for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
+            }
+            const float perUnit = largest > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(largest) : 0.0f;
+            for (std::size_t b = 0; b < model.field.panelBodies.size(); ++b) {
+                const SourcePanels& body = model.field.panelBodies[b];
+                for (std::size_t j = 0; j < body.size(); ++j) {
+                    const ImVec2 base = toPixels(body.controlPoints[j]);
+                    const ImVec2 out = normalized({static_cast<float>(body.normals[j].x), static_cast<float>(-body.normals[j].y)});
+                    const float d = distanceToSegment(mouse, base, base + out * (static_cast<float>(body.strengths[j]) * perUnit));
+                    if (d < best) {
+                        best = d;
+                        panelHit = std::pair{b, j};
+                    }
+                }
+            }
+        }
+        const auto panelText = [&](std::pair<std::size_t, std::size_t> h) {
+            const SourcePanels& body = model.field.panelBodies[h.first];
+            const std::size_t j = h.second;
+            const double lambda = body.strengths[j];
+            std::string text = std::format("Source-panel body #{}, panel {} of {}\nλ = {:.5g}  ({})", body.element + 1, j + 1,
+                                           body.size(), lambda, lambda >= 0.0 ? "a source: fluid out" : "a sink: fluid in");
+            const double speed = model.freeStreamSpeed;
+            if (speed > 0.0) {
+                const double cp = pressureCoefficient(length(model.field.velocity(body.controlPoints[j])), speed);
+                text += std::format("\nλ / V∞ = {:.5g},  λ / 2πV∞ = {:.4f}\nCp at the control point = {:.4f}", lambda / speed,
+                                    lambda / (2.0 * std::numbers::pi * speed), cp);
+            }
+            text += std::format("\nPanel length s = {:.4g}, so λs = {:.4g} leaves it per unit depth", body.lengths[j],
+                                lambda * body.lengths[j]);
+            return text;
+        };
+        if (showStrengths) {
+            const float perUnit = drawPanelStrengths(dl, model.field, panelHit);
+            if (perUnit > 0.0f) {
+                const float s = uiScale();
+                const std::string caption = std::format(
+                    "Panel source strengths: the longest stick is λ = {:.4g}  (green: source λ > 0, red: sink λ < 0)",
+                    k_strengthStickPx * s / perUnit);
+                const ImVec2 textSize = ImGui::CalcTextSize(caption.c_str());
+                const ImVec2 at = plotPos + ImVec2(10.0f * s, result.pixelSize.y - textSize.y - 12.0f * s);
+                dl->AddRectFilled(at - ImVec2(6.0f * s, 3.0f * s), at + textSize + ImVec2(6.0f * s, 3.0f * s),
+                                  IM_COL32(15, 17, 24, 190), 4.0f * s);
+                dl->AddText(at, k_hintColor, caption.c_str());
+            }
+        }
 
         if (scene.plot.showImages) {
             const auto drawImage = [&](const FlowElement& image) {
@@ -721,9 +873,12 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             if (anchor && !std::holds_alternative<SymmetryWall>(element)) {
                 dl->AddCircle(toPixels(*anchor), 11.0f * uiScale(), k_highlightColor, 0, 1.5f * uiScale());
             }
-            ImGui::SetTooltip("#%zu  %s\n%s\n%s", *hit + 1, kindName(kindOf(element)), describe(element).c_str(),
+            // A sink's stick points into its body, where the body itself is grabbed: show both.
+            const bool onPanel = panelHit && std::holds_alternative<PanelBody>(element);
+            ImGui::SetTooltip("#%zu  %s\n%s\n%s%s", *hit + 1, kindName(kindOf(element)), describe(element).c_str(),
                               draggable ? "Drag to move (Shift snaps to a grid), double-click to edit."
-                                        : "Double-click to edit.");
+                                        : "Double-click to edit.",
+                              onPanel ? ("\n\n" + panelText(*panelHit)).c_str() : "");
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 result.editRequest = hit;
             } else if (draggable && pressed) {
@@ -753,6 +908,8 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
                 if (shown) result.dividingRemove = shown;
                 else result.dividingAdd = stagnationHit;
             }
+        } else if (panelHit) {
+            ImGui::SetTooltip("%s", panelText(*panelHit).c_str());
         }
         m_grabbableHovered = draggable || rakeHit.has_value() || stagnationHit.has_value();
 

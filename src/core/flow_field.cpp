@@ -26,6 +26,7 @@ Complex FlowField::complexVelocity(Vec2 p) const {
     for (const PeriodicRow& row : rows) {
         if (!within(row, p, singularRadius)) w += pfl::complexVelocity(row, p);
     }
+    for (const SourcePanels& body : panelBodies) w += body.complexVelocity(p);
     return w;
 }
 
@@ -37,11 +38,20 @@ Complex FlowField::complexPotential(Vec2 p) const {
     for (const PeriodicRow& row : rows) {
         if (!within(row, p, singularRadius)) f += pfl::complexPotential(row, p);
     }
+    for (const SourcePanels& body : panelBodies) f += body.complexPotential(p);
     return f;
 }
 
 bool FlowField::inDomain(Vec2 p) const {
-    return std::ranges::all_of(elements, [p](const FlowElement& e) { return inElementDomain(e, p); });
+    return std::ranges::all_of(elements, [p](const FlowElement& e) { return inElementDomain(e, p); }) &&
+           panelBodyAt(p) == nullptr;
+}
+
+const SourcePanels* FlowField::panelBodyAt(Vec2 p) const {
+    for (const SourcePanels& body : panelBodies) {
+        if (body.contains(p)) return &body;
+    }
+    return nullptr;
 }
 
 bool FlowField::nearSingularity(Vec2 p, double radius) const {

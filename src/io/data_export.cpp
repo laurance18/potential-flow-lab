@@ -70,7 +70,7 @@ std::string linesCsv(const StreamlineSet& streamlines, const StreamlineSet& equi
 
 std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& model) {
     const double nan = std::nan("");
-    std::string out = "body,closed,x,y,s,streamwise,theta_deg,cp,cp_exact\n";
+    std::string out = "body,closed,x,y,s,streamwise,theta_deg,cp,cp_exact,lambda,lambda_exact\n";
     for (std::size_t b = 0; b < bodies.size(); ++b) {
         const BodySurface& body = bodies[b];
         const std::optional<CylinderReference> cylinder = cylinderReference(body, model);
@@ -78,9 +78,12 @@ std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& 
             const Vec2 p = body.points[k];
             double exact = nan;
             if (cylinder) exact = cylinder->cp(std::atan2(p.y - cylinder->centre.y, p.x - cylinder->centre.x));
+            else if (!body.cpExact.empty()) exact = body.cpExact[k];
             std::format_to(std::back_inserter(out), "{},{},", b + 1, body.closed ? 1 : 0);
+            const double lambda = k < body.strength.size() ? body.strength[k] : nan;
+            const double lambdaExact = k < body.strengthExact.size() ? body.strengthExact[k] : nan;
             for (const double value : {p.x, p.y, body.arcLength[k], body.streamwise[k],
-                                       body.closed ? body.angle[k] : nan, body.cp[k], exact}) {
+                                       body.closed ? body.angle[k] : nan, body.cp[k], exact, lambda, lambdaExact}) {
                 appendNumber(out, value);
                 out += ',';
             }

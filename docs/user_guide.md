@@ -60,6 +60,7 @@ yellow warning appears before you apply.
 | Doublet | strength μ, position, axis angle β | F = μ e^(iβ)/(z − z₀); β = α with a uniform flow at α gives a cylinder of radius √(μ/U∞) |
 | Sector (wedge) flow | strength V, vertex, wall angles θ₁, θ₂ | 0 < θ₂ − θ₁ ≤ 360°, n = 180°/(θ₂ − θ₁) |
 | Symmetry wall | a point on the wall, angle φ | infinite straight wall with zero normal velocity |
+| Source-panel body | shape, semi-axes a and b, centre, rotation θ, panels N | a solid ellipse or rectangle, solved by the source panel method (see *Source-panel bodies*) |
 
 To change or remove an element later, open the **Elements** menu: every element is listed with
 its parameters; hover one and choose **Edit...** or **Delete**. **Delete all** (or **File → Clear
@@ -123,7 +124,8 @@ of animation and disappears where it leaves the view or runs into a singular poi
 
 **View → Surface pressure** finds the bodies in the flow: the closed bodies (cylinder, lifting
 cylinder, Rankine oval) and half-bodies bounded by the dividing streamlines through stagnation
-points. It needs a uniform flow.
+points, and the source-panel bodies (see *Source-panel bodies*), which come first. It needs a
+uniform flow.
 
 - In the plot, each body surface is coloured by Cp on the same scale as the Cp background. Arrows
   normal to the surface point towards it where Cp > 0 (pressure) and away from it where Cp < 0
@@ -229,6 +231,80 @@ about it. Other wall layouts with no closed image system, such as three parallel
 meeting at 180°/k, are truncated at 32 images per element, and the status bar warns that the wall
 condition is then approximate.
 
+## Source-panel bodies
+
+Superposition only makes the bodies that its elements happen to produce: a cylinder, a Rankine
+oval, a half-body. The **source panel method** (Anderson, §3.17) works the other way round: you
+give the shape, and the program finds the flow around it. Add one with the **Source-panel body**
+tool at the bottom of the element icons (below a separator: it is solved numerically, not
+written down in closed form).
+
+| Parameter | Meaning |
+|---|---|
+| Shape | **Ellipse** (a circle when a = b) or **Rectangle** |
+| a, b | Semi-axes of the ellipse, or the half-width and half-height of the rectangle |
+| x₀, y₀ | Centre of the body (drag it there, or grab it anywhere inside it) |
+| θ | Turns the body counter-clockwise about its centre |
+| N | Number of panels, 4 to 400 (a rectangle needs an even number) |
+
+How it works:
+
+- The surface is cut into N straight panels, numbered clockwise. Each one is a source sheet of
+  its own constant strength λ (volume flow per unit length).
+- The strengths are not given: they are solved for, so that at the middle of every panel (its
+  **control point**) no fluid crosses the surface. The flow there is the free stream, every other
+  element of the scene (and its wall images) and all the panels, of every panel body at once, so
+  bodies feel each other.
+- The surface speed is the tangential velocity at the control points, and Cp follows from
+  Bernoulli. The surface-pressure panel plots it at the control points (one marker per panel);
+  for an ellipse or circle alone in a uniform stream it also draws the exact curve, from the
+  conformal map of the cylinder flow, and prints the largest difference.
+- Inside the body the panels make a flow of their own that means nothing physically, so the
+  inside is drawn as a solid and left out of the flow: streamlines stop at the surface and
+  particles never go in. The status bar says so when the mouse is inside.
+
+What to expect:
+
+- **A circle is exact at the control points**, for any N: Anderson's 8-panel cylinder already
+  gives Cp = 1 − 4 sin²θ there. Between the control points and away from the body it is not.
+- **An ellipse converges**: the surface Cp error falls about 4 times each time N doubles (second
+  order), the velocity away from the body only about 2 times (first order). Sweep N in the
+  **Parameters** panel to watch it.
+- **No lift, no drag.** Source panels carry no circulation, so a body alone in a stream feels no
+  force (d'Alembert), at any angle. Put a **vortex inside** the body to give it circulation: inside
+  a circle that is the lifting cylinder, and the lift from the panels approaches L′ = ρV∞Γ. Only
+  the circulation of what lies inside a body shows outside it; the panels cancel a source or
+  doublet inside it, and a warning says so. Nothing in this method fixes how much circulation an
+  airfoil gets: that is the Kutta condition, which needs vortex panels.
+- Sharp corners (the rectangle) have infinite speed in exact potential flow. The panels are made
+  shorter near the corners, but Cp right at a corner stays only an estimate.
+
+**Seeing the source strengths.** **View → Panel source strengths** draws the solution itself on
+every panel body: a stick from each control point, normal to its panel, as long as the panel's
+strength λ (the longest stick is the largest |λ| of all the panels; a caption gives its value).
+It points outwards, in green, for a source (λ > 0, fluid pushed out of the surface) and inwards,
+in red, for a sink. The line through the tips is the strength distribution as a polar plot around
+the body. Hover a stick for the panel's number, λ, λ/V∞, λ/2πV∞, its Cp and the volume flow λs
+it lets out. With **Surface pressure** on, the side panel also plots λ/V∞ along the surface, on the
+same axis as Cp, over the exact continuous sheet where it is known (an ellipse or circle alone in a
+uniform stream). The exact sheet leaves a uniform flow inside the body, so λ = −v_inside · n; on a
+circle λ = −2V∞ cos(θ − α), 2V∞ on the point facing the stream.
+
+The strengths converge more slowly than Cp, at first order: Anderson's 8 panels give 2.366 V∞ on
+the panel facing the stream, 18 % above the sheet's 2V∞, while their Cp at the control points is
+already exact. Sweep N and watch the sticks settle onto the sheet. On the rectangle the short
+corner panels carry the largest strengths, where the flow has to turn round the corner.
+
+The status bar shows the boundary condition as it is solved: the largest |v · n| at the control
+points over the speed there (about 10⁻¹⁵), and in its tooltip Σλs, the net source strength of each
+body, which is zero for the exact solution of a closed body (and zero by symmetry for an ellipse or
+rectangle alone in a stream).
+
+Limits: panel bodies have no images in symmetry walls (the walls are then not streamlines near the
+body, and a warning says so), and overlapping bodies have no meaningful solution (also warned).
+Stagnation points on a panel body are found where the tangential speed changes sign between two
+control points.
+
 ## Saving and loading configurations
 
 **File → Save** (Ctrl+S) and **Save As...** (Ctrl+Shift+S) write the scene as a JSON file: every
@@ -283,9 +359,9 @@ PotentialFlowLab.exe examples\lifting_cylinder.json --export-video lifting_cylin
 ## Verifying the physics
 
 **Verify → Physics checks...** (F5) tests the program against potential-flow theory, in front of
-you. Each of the 44 checks runs the program's own code and compares the result with the exact one,
+you. Each of the 51 checks runs the program's own code and compares the result with the exact one,
 written out separately, mostly in polar form, without using the program's equations. The checks are
-in eight groups:
+in nine groups:
 
 | Group | What is checked |
 |---|---|
@@ -296,6 +372,7 @@ in eight groups:
 | Pressure and forces | Cp on the cylinder and the Rankine bodies, d'Alembert's paradox, Kutta–Joukowski lift, forces from the far field (Blasius), and forces along a parameter sweep |
 | Streamlines and equipotentials | Straight lines in a uniform flow, rays from a source or sink, circles around a vortex in the right direction, ψ constant along streamlines, even spacing, arrows along the flow, and equipotentials at 90° to the streamlines |
 | Particles and dye | Tracer particles against the exact orbit around a vortex and against ψ past a cylinder; dye against ψ and the spacing V∞Δt |
+| Panel methods | Source panels on a cylinder (exact at the control points, and Anderson's 8-panel strengths), on an ellipse (second-order convergence of Cp), the panel strengths against the exact source sheet (first order), the panel sums near and far, the field around an ellipse against its conformal map, a lifting cylinder from a vortex inside panels, and no flow through the panels |
 | Saving and reopening | A scene with every kind of element saved to a file and reopened: every parameter, the rakes, the plot settings and the streamlines come back |
 
 The checks run one after another, and each turns into a green tick when it passes (red cross if

@@ -11,11 +11,14 @@
 // with kind "streamline" or "equipotential" and line numbered from 1 within each kind.
 //
 // Surface pressure: one row per point of every body surface (see core/surface_pressure.hpp),
-//     body, closed, x, y, s, streamwise, theta_deg, cp, cp_exact
+//     body, closed, x, y, s, streamwise, theta_deg, cp, cp_exact, lambda, lambda_exact
 // with body numbered from 1, closed 1 or 0, s the arc length from the stagnation point, streamwise
 // x/c for a closed body (distance downstream of the stagnation point for a half-body), theta_deg the
 // angle around a closed body from the free-stream direction, and cp_exact the closed-form Cp for a
-// circular cylinder. Columns that do not apply are NaN.
+// circular cylinder, or for a source-panel ellipse or circle alone in a uniform stream (whose points
+// are its panels' control points). lambda is the source strength of a panel body's panel at that
+// point, lambda_exact that of the exact continuous sheet where it is known. Columns that do not
+// apply are NaN.
 //
 // Parameter sweep (see core/sweep.hpp): rows of two kinds for each step of the sweep,
 //     step, value, kind, index, x, y, closed, chord, circulation, lift_q, drag_q, cl, cd, cp_min, lift_q_exact

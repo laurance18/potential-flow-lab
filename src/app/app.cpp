@@ -1364,6 +1364,7 @@ StatusInfo App::statusInfo() const {
         ProbeInfo probe;
         probe.position = *m_plot.mouse;
         probe.inDomain = field.inDomain(probe.position);
+        if (const SourcePanels* body = field.panelBodyAt(probe.position)) probe.insideBody = body->element + 1;
         if (probe.inDomain) {
             probe.velocity = field.velocity(probe.position);
             if (m_model.freeStreamSpeed > 0.0) {
@@ -1379,6 +1380,13 @@ StatusInfo App::statusInfo() const {
         const WallCheck check = checkWall(field, *wall, m_plot.limits);
         if (check.samples == 0 || check.maxSpeed <= 0.0) continue;
         info.walls.push_back({i + 1, check.maxNormalSpeed / check.maxSpeed, check.samples});
+    }
+    for (const SourcePanels& body : field.panelBodies) {
+        const double scale = std::max(m_model.freeStreamSpeed, 1e-300) * body.perimeter();
+        info.panelBodies.push_back({.number = body.element + 1,
+                                    .panels = static_cast<int>(body.size()),
+                                    .relativeNormalSpeed = normalFlowResidual(body, field),
+                                    .relativeNetSource = std::abs(body.netSource) / scale});
     }
     return info;
 }

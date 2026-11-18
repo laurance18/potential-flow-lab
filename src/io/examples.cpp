@@ -36,6 +36,19 @@ constexpr ExampleScene k_examples[] = {
     {"flat_plate_edge.json", "Flow around a flat plate edge",
      "Sector flow with walls at 0° and 360° (n = 1/2):\n"
      "flow around the edge of a semi-infinite flat plate along +x."},
+    {"panel_cylinder.json", "Source panels: cylinder (8 panels)",
+     "Anderson's example: a circle of radius 1 cut into 8 straight source panels, in U∞ = 1.\n"
+     "Cp at the 8 control points is exactly 1 − 4 sin²θ; between them the octagon shows.\n"
+     "Raise N in the Parameters panel to round it off."},
+    {"panel_ellipse.json", "Source panels: ellipse at incidence",
+     "A 4:1 ellipse with 60 source panels, at 15° to the stream U∞ = 1,\n"
+     "against the exact Cp from the conformal map. No lift: source panels carry no circulation."},
+    {"panel_lifting_cylinder.json", "Source panels: lifting cylinder",
+     "A vortex Γ = 2π inside a source-panel circle (48 panels): the panels keep the flow off the\n"
+     "surface and the vortex gives the circulation. Compare with the Lifting cylinder example."},
+    {"panel_bluff_bodies.json", "Source panels: square and circle",
+     "A square and a circle, solved together so each feels the other, in U∞ = 1.\n"
+     "The square's corners are where the speed peaks."},
 };
 
 } // namespace

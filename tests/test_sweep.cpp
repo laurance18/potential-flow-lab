@@ -37,8 +37,9 @@ TEST_CASE("every element kind lists its parameters, and they read and write the 
         REQUIRE_FALSE(parameters.empty());
         for (const ElementParameter& p : parameters) {
             const double before = p.get(element);
-            p.set(element, before + 0.125);
-            CHECK(p.get(element) == doctest::Approx(before + 0.125));
+            const double step = p.kind == ParameterKind::Count ? 1.0 : 0.125; // counts are whole numbers
+            p.set(element, before + step);
+            CHECK(p.get(element) == doctest::Approx(before + step));
             p.set(element, before);
         }
         if (const std::optional<Vec2> anchor = anchorPoint(element)) {

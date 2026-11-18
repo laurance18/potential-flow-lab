@@ -2,8 +2,9 @@
 
 An interactive 2D potential-flow simulator in C++20, built as a senior mechanical-engineering
 semester project. It superposes elementary flows (uniform flow, source/sink, vortex, doublet,
-sector flow) and straight symmetry walls, draws evenly spaced streamlines with direction arrows,
-equipotential lines and velocity-magnitude contours, and animates tracer particles on the GPU.
+sector flow) and straight symmetry walls, solves ellipse, circle and rectangle bodies with the
+source panel method, draws evenly spaced streamlines with direction arrows, equipotential lines
+and velocity-magnitude contours, and animates tracer particles on the GPU.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
   with Apply / Cancel. Below them, the dye rake tool.
@@ -33,11 +34,18 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   equipotential polylines, CSV surface Cp of the bodies, and MP4/GIF recordings. The exports also
   run from the command line.
 - **View** menu: streamline density, arrows, wall images, equipotential lines, a |V| or Cp
-  background, surface pressure, stagnation point markers, tracer particles.
-- **Verify** menu (F5): 44 checks run in front of you. Each compares the program with an exact
+  background, surface pressure, stagnation point markers, panel source strengths, tracer particles.
+- **Source-panel bodies**: an ellipse, circle or rectangle cut into N straight source panels whose
+  strengths are solved so no fluid crosses the surface at the control points, in the flow of every
+  other element and body. Surface Cp at the control points against the exact ellipse solution,
+  interior masked, a vortex inside gives the body circulation (lifting cylinder). View → Panel
+  source strengths draws each panel's λ as a stick on the body, and the Cp panel plots λ against
+  the exact source sheet.
+- **Verify** menu (F5): 51 checks run in front of you. Each compares the program with an exact
   result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine bodies,
   dividing streamlines, wall and channel images, surface Cp, d'Alembert, Kutta–Joukowski and
-  Blasius, the streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
+  Blasius, the source panel method (exact on a cylinder, converging on an ellipse), the
+  streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
   Each check shows its error against its tolerance and the program's numbers beside theory, and can
   load its flow into the plot.
 - **Help** menu: the user guide (F1) built into the exe, with chapters and a search box; the sign

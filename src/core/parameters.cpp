@@ -1,6 +1,8 @@
 #include "core/parameters.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <format>
 
 namespace pfl {
@@ -62,6 +64,29 @@ constexpr std::array k_wall = {
                                               ParameterKind::Angle),
 };
 
+// N, rounded to a whole number; to an even one on a rectangle, which needs one (so a slider or a
+// sweep steps through the valid values only).
+constexpr ElementParameter panelCount() {
+    return {"N", "Number of panels (a rectangle: even)", ParameterKind::Count,
+            [](const SceneElement& e) { return static_cast<double>(std::get<PanelBody>(e).panels); },
+            [](SceneElement& e, double v) {
+                PanelBody& body = std::get<PanelBody>(e);
+                const double limited = std::isfinite(v) ? std::clamp(v, -1e6, 1e6) : 0.0; // 0: invalid
+                body.panels = body.shape == PanelShape::Rectangle ? 2 * static_cast<int>(std::lround(0.5 * limited))
+                                                                  : static_cast<int>(std::lround(limited));
+            }};
+}
+
+constexpr std::array k_panelBody = {
+    field<PanelBody, &PanelBody::semiAxisA>("a", "Semi-axis along the body's own x axis (a circle's radius when a = b)",
+                                            ParameterKind::Length),
+    field<PanelBody, &PanelBody::semiAxisB>("b", "Semi-axis across it", ParameterKind::Length),
+    xOf<PanelBody, &PanelBody::position>("x coordinate of the body's centre"),
+    yOf<PanelBody, &PanelBody::position>("y coordinate of the body's centre"),
+    field<PanelBody, &PanelBody::angle>("θ", "Turns the body counter-clockwise about its centre", ParameterKind::Angle),
+    panelCount(),
+};
+
 } // namespace
 
 std::span<const ElementParameter> elementParameters(ElementKind kind) {
@@ -72,6 +97,7 @@ std::span<const ElementParameter> elementParameters(ElementKind kind) {
     case ElementKind::Doublet: return k_doublet;
     case ElementKind::Sector: return k_sector;
     case ElementKind::Wall: return k_wall;
+    case ElementKind::PanelBody: return k_panelBody;
     }
     return {};
 }
