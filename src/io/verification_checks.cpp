@@ -31,7 +31,9 @@ Scene everythingScene() {
                       SectorFlow{.strength = 0.8, .vertex = {-3.0, -2.0}, .wall1 = 10.0 * deg, .wall2 = 100.0 * deg},
                       SymmetryWall{.point = {0.0, -0.5}, .angle = 7.0 * deg},
                       PanelBody{.shape = PanelShape::Rectangle, .position = {-1.0, 1.7}, .semiAxisA = 0.35,
-                                .semiAxisB = 0.2, .angle = 20.0 * deg, .panels = 24}};
+                                .semiAxisB = 0.2, .angle = 20.0 * deg, .panels = 24},
+                      ThinAirfoil{.camber = CamberLine::Arc, .position = {2.3, 0.6}, .chord = 1.2, .angle = -6.0 * deg,
+                                  .panels = 30, .arcCamber = 0.04}};
     scene.rakes.push_back({.start = {-2.0, 0.0}, .end = {-1.0, 1.5}, .emitters = 7});
     scene.plot.view = {{-3.5, -2.2}, {4.5, 2.8}};
     scene.plot.streamlineDensity = 31;

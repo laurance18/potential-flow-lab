@@ -42,13 +42,61 @@ void note(const std::string& text) {
     ImGui::PopTextWrapPos();
 }
 
-// Sum of the scene's uniform flows (for the doublet's cylinder-radius hint).
-double freeStreamSpeed(const Scene& scene) {
+// Sum of the scene's uniform flows (for the doublet's cylinder-radius hint and the airfoil's angle of attack).
+Vec2 freeStream(const Scene& scene) {
     Complex w{};
     for (const SceneElement& e : scene.elements) {
         if (const auto* u = std::get_if<UniformFlow>(&e)) w += complexVelocity(*u, {});
     }
-    return std::abs(w);
+    return velocityFromW(w);
+}
+
+double freeStreamSpeed(const Scene& scene) { return length(freeStream(scene)); }
+
+void drawThinAirfoilFields(ThinAirfoil& airfoil, const Scene& scene) {
+    const float width = 170.0f * uiScale();
+    int camber = static_cast<int>(airfoil.camber);
+    ImGui::SetNextItemWidth(width);
+    ImGui::Combo("Camber line", &camber, "Flat plate\0NACA 4-digit mean line\0Circular arc\0");
+    airfoil.camber = static_cast<CamberLine>(camber);
+    if (airfoil.camber == CamberLine::Naca) {
+        ImGui::SetNextItemWidth(width);
+        ImGui::InputInt("Camber m [%]", &airfoil.nacaCamber);
+        ImGui::SetItemTooltip("Maximum camber, % of the chord: the first digit of NACA m p tt (negative: upside down)");
+        ImGui::BeginDisabled(airfoil.nacaCamber == 0);
+        ImGui::SetNextItemWidth(width);
+        ImGui::InputInt("Its position p [c/10]", &airfoil.nacaPosition);
+        ImGui::SetItemTooltip("Where the camber is largest, in tenths of the chord from the leading edge: the second digit");
+        ImGui::EndDisabled();
+    } else if (airfoil.camber == CamberLine::Arc) {
+        double percent = 100.0 * airfoil.arcCamber;
+        if (inputValue("Camber h/c [%]", percent, "Height of the arc above its chord at mid-chord, % of the chord (at most 25)")) {
+            airfoil.arcCamber = percent / 100.0;
+        }
+    }
+    inputValue("Chord c", airfoil.chord, "Length from the leading to the trailing edge");
+    inputPoint(airfoil.position, "middle of the chord");
+    inputAngle("Rotation θ [°]", airfoil.angle, "Turns the airfoil counter-clockwise about the middle of its chord");
+    ImGui::SetNextItemWidth(width);
+    ImGui::InputInt("Panels N", &airfoil.panels, 1, 10);
+    ImGui::SetItemTooltip("Number of straight vortex panels along the camber line (%d to %d), cosine-spaced", k_minSheetPanels,
+                          k_maxSheetPanels);
+
+    std::string text = "Vortex-sheet airfoil (thin-airfoil theory): a vortex sheet γ(s) on the camber line, which has no "
+                       "thickness, cut into N straight panels with γ varying linearly along each. γ is solved so that no "
+                       "fluid crosses the line at the panel midpoints, with γ = 0 at the trailing edge (the Kutta "
+                       "condition), in the flow of all the other elements and bodies.";
+    if (!thinAirfoilError(airfoil)) {
+        const Vec2 stream = freeStream(scene);
+        const bool hasStream = length(stream) > 0.0;
+        const double alpha = hasStream ? angleOfAttack(airfoil, stream) : -airfoil.angle;
+        const ThinAirfoilTheory theory = thinAirfoilTheory(airfoil, alpha);
+        text += std::format("\n\nThis is a {}. {} α = {:.4g}°. Thin-airfoil theory: α_L0 = {:.4g}°, c_l = 2π(α − α_L0) = "
+                            "{:.4g}, c_m,c/4 = {:.4g}.",
+                            airfoilName(airfoil), hasStream ? "In the scene's free stream" : "In a stream along +x (α = −θ),",
+                            alpha * k_degrees + 0.0, theory.alphaZeroLift * k_degrees + 0.0, theory.cl, theory.cmQuarter + 0.0);
+    }
+    note(text);
 }
 
 void drawPanelBodyFields(PanelBody& body) {
@@ -129,7 +177,8 @@ void drawPanelBodyFields(PanelBody& body) {
     if (body.shape == PanelShape::Naca) {
         text = std::format("This is the {}. With a stream along +x the angle of attack is α = −θ. ", nacaName(body)) +
                "Panels are cosine-spaced along the chord, short at both edges. Source panels give an airfoil no lift "
-               "(no circulation, no Kutta condition): that needs a vortex sheet.";
+               "(no circulation, no Kutta condition): that needs a vortex sheet (the Vortex-sheet airfoil tool, "
+               "for its camber line).";
     } else if (body.shape == PanelShape::Custom) {
         text = "The points only give the shape: the N panels are laid along it, a vertex at every corner, shorter where "
                "it curves. Draw an outline with the pencil tool below the element icons, or import airfoil coordinates "
@@ -174,6 +223,8 @@ void drawFields(SceneElement& element, const Scene& scene) {
         }
     } else if (auto* body = std::get_if<PanelBody>(&element)) {
         drawPanelBodyFields(*body);
+    } else if (auto* airfoil = std::get_if<ThinAirfoil>(&element)) {
+        drawThinAirfoilFields(*airfoil, scene);
     } else if (auto* wall = std::get_if<SymmetryWall>(&element)) {
         inputPoint(wall->point, "point on the wall");
         inputAngle("Angle φ [°]", wall->angle, "Direction of the wall line, counter-clockwise from +x");

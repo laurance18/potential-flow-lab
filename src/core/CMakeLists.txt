@@ -6,6 +6,7 @@ add_library(pfl_core STATIC
     image_system.hpp image_system.cpp
     panel_geometry.hpp panel_geometry.cpp
     panel_method.hpp panel_method.cpp
+    vortex_sheet.hpp vortex_sheet.cpp
     scene.hpp scene.cpp
     history.hpp history.cpp
     streamline.hpp streamline.cpp

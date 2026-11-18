@@ -658,6 +658,14 @@ void HelpWindow::drawConventions() {
              "into N straight panels numbered clockwise. Panel j from z₁ to z₂ in direction e^(iθ_j) is a source sheet of "
              "strength λ_j (> 0 pushes fluid out); the λ_j are solved so that v·n = 0 at every panel midpoint.",
              "Σ (λ_j/2π) ∫ ln(z − z′) ds′ along panel j", "Σ (λ_j/2π) e^(−iθ_j) ln((z − z₁)/(z − z₂))"},
+            {"Vortex-sheet airfoil",
+             "A camber line (flat plate, NACA 4-digit mean line or circular arc) of chord c, placed by the middle of its "
+             "chord z₀ and turned by θ (in a stream along +x, α = −θ). It carries a vortex sheet γ(s), circulation per "
+             "unit length, **γ > 0 clockwise** like Γ: the flow over the top is faster, u_upper − u_lower = γ. "
+             "Γ = ∫γ ds > 0 gives lift L′ = ρV∞Γ. N straight panels from the leading to the trailing edge, γ linear "
+             "along each; the Kutta condition sets γ = 0 at the trailing edge. φ jumps by Γ across the ray running on "
+             "from the trailing edge along the chord.",
+             "(i/2π) ∫ γ(s) ln(z − z(s)) ds", "(i/2π) ∫ γ(s) ds / (z − z(s))"},
         };
         for (std::size_t r = 0; r < std::size(k_rows); ++r) {
             ImGui::TableNextRow(r == 0 ? ImGuiTableRowFlags_Headers : ImGuiTableRowFlags_None);
@@ -690,9 +698,15 @@ void HelpWindow::drawConventions() {
          "For a body alone in a uniform stream: D′ = 0 (d'Alembert) and L′ = ρ V∞ Γ with Γ > 0 clockwise "
          "(Kutta–Joukowski), so L′/q∞ = 2Γ/V∞. A clockwise vortex on a cylinder in a flow along +x "
          "lifts it upwards."},
+        {"Thin airfoils",
+         "ΔCp = Cp_lower − Cp_upper = 2γ/V∞, > 0 where the airfoil is pushed up. c_l = 2Γ/(V∞c) (Kutta–Joukowski), "
+         "c_m,c/4 > 0 nose up. Thin-airfoil theory: γ(θ) = 2V∞[A₀(1 + cos θ)/sin θ + Σ Aₙ sin nθ] with "
+         "x = (c/2)(1 − cos θ), c_l = 2π(A₀ + A₁/2), c_m,c/4 = (π/4)(A₂ − A₁). The angle of attack α is the "
+         "stream's direction relative to the chord, positive nose up."},
         {"φ and ψ",
          "φ is multivalued around a vortex (by Γ) and ψ around a source (by Λ). The exports use the principal "
-         "branch, which jumps across the line running in −x from the element."},
+         "branch, which jumps across the line running in −x from the element; around a thin airfoil φ jumps "
+         "across the ray from its trailing edge along the chord."},
     };
     drawPairTable("pressure", k_pressure);
 

@@ -108,7 +108,8 @@ TEST_CASE("sweep CSV: stagnation and body rows for every step") {
     std::vector<SweepSample> samples;
     for (const double value : sweepValues(0.0, pi, 3)) samples.push_back(*sampleSweep(scene, {2, 0}, value, k_view));
     const std::string csv = sweepCsv(samples);
-    CHECK(csv.starts_with("step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact\n"));
+    CHECK(csv.starts_with("step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact,"
+                          "alpha_deg,cm_c4,cl_thin,cm_c4_thin\n"));
     CHECK(countLines(csv, ",stagnation,") == 6);
     CHECK(countLines(csv, ",body,") == 3);
     CHECK(countLines(csv, "\n") == 1 + 6 + 3);

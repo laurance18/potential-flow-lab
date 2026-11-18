@@ -31,12 +31,15 @@ struct WallStatus {
 };
 
 // The boundary condition on a source-panel body, and its net source strength (0 for the exact
-// solution of a closed body), relative to the perimeter times the free-stream speed.
+// solution of a closed body), relative to the perimeter times the free-stream speed. For a
+// vortex-sheet airfoil: the boundary condition and its circulation.
 struct PanelStatus {
     std::size_t number = 0; // 1-based element number
     int panels = 0;
     double relativeNormalSpeed = 0.0;
     double relativeNetSource = 0.0;
+    bool airfoil = false;
+    double circulation = 0.0; // an airfoil's Gamma
 };
 
 struct StatusInfo {

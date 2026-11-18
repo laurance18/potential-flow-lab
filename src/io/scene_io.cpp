@@ -19,6 +19,7 @@ constexpr const char* k_format = "pfl-scene";
 constexpr int k_version = 1;
 constexpr double k_degrees = 180.0 / std::numbers::pi;
 constexpr std::array k_panelShapes = {PanelShape::Ellipse, PanelShape::Rectangle, PanelShape::Naca, PanelShape::Custom};
+constexpr std::array k_camberLines = {CamberLine::Flat, CamberLine::Naca, CamberLine::Arc};
 
 template <typename... Ts>
 struct Overloaded : Ts... {
@@ -74,6 +75,17 @@ json elementToJson(const SceneElement& element) {
                 }
                 return j;
             },
+            [](const ThinAirfoil& e) -> json {
+                json j = {{"type", "vortex_sheet"},       {"camber", camberName(e.camber)}, {"x", e.position.x},
+                          {"y", e.position.y},            {"chord", e.chord},               {"angle_deg", e.angle * k_degrees},
+                          {"panels", e.panels}};
+                if (e.camber == CamberLine::Naca) {
+                    j["naca_camber"] = e.nacaCamber;
+                    j["naca_position"] = e.nacaPosition;
+                }
+                if (e.camber == CamberLine::Arc) j["arc_camber"] = e.arcCamber;
+                return j;
+            },
         },
         element);
 }
@@ -116,6 +128,22 @@ SceneElement elementFromJson(const json& j) {
             for (const json& p : j.at("outline")) body.outline.push_back({p.at(0).get<double>(), p.at(1).get<double>()});
         }
         return body;
+    }
+    if (type == "vortex_sheet") {
+        const std::string camber = j.at("camber").get<std::string>();
+        ThinAirfoil airfoil{.position = point(),
+                            .chord = num("chord"),
+                            .angle = j.value("angle_deg", 0.0) / k_degrees,
+                            .panels = j.at("panels").get<int>()};
+        const auto known = std::ranges::find_if(k_camberLines, [&](CamberLine c) { return camber == camberName(c); });
+        if (known == k_camberLines.end()) throw std::runtime_error("unknown camber line \"" + camber + "\"");
+        airfoil.camber = *known;
+        if (airfoil.camber == CamberLine::Naca) {
+            airfoil.nacaCamber = j.at("naca_camber").get<int>();
+            airfoil.nacaPosition = j.at("naca_position").get<int>();
+        }
+        if (airfoil.camber == CamberLine::Arc) airfoil.arcCamber = num("arc_camber");
+        return airfoil;
     }
     throw std::runtime_error("unknown element type \"" + type + "\"");
 }

@@ -71,6 +71,8 @@ public:
         for (const FlowElement& e : field.elements) {
             if (const std::optional<Vec2> centre = singularPoint(e)) m_centres.push_back(*centre);
         }
+        // The flow turns round a thin airfoil's leading edge in a tiny space.
+        for (const VortexSheet& sheet : field.vortexSheets) m_centres.push_back(sheet.leadingEdge());
     }
 
     // Step of at most |h|, shortened near singular points where streamlines curve tightly.
@@ -103,7 +105,9 @@ public:
         if (!k3) return std::nullopt;
         const auto k4 = direction(p + *k3 * h);
         if (!k4 || dot(*k1, *k4) < 0.0) return std::nullopt; // stepped across a stagnation point
-        return p + (*k1 + *k2 * 2.0 + *k3 * 2.0 + *k4) * (h / 6.0);
+        const Vec2 next = p + (*k1 + *k2 * 2.0 + *k3 * 2.0 + *k4) * (h / 6.0);
+        if (!m_field.vortexSheets.empty() && m_field.crossesSheet(p, next)) return std::nullopt; // cut through a thin airfoil
+        return next;
     }
 
     // Points from `seed` (included) in one direction. Sets `closed` if the line returned to its seed.

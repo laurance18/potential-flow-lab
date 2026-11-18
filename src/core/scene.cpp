@@ -26,14 +26,48 @@ bool coincide(Vec2 a, Vec2 b) {
 
 double distanceToWall(Vec2 p, const SymmetryWall& wall) { return std::abs(dot(p - wall.point, wall.normal())); }
 
-// The flow element of a scene element, or nullopt for a wall or a panel body.
+// The flow element of a scene element, or nullopt for a wall, a panel body or a thin airfoil.
 std::optional<FlowElement> asFlowElement(const SceneElement& element) {
     return std::visit(Overloaded{
                           [](const SymmetryWall&) -> std::optional<FlowElement> { return std::nullopt; },
                           [](const PanelBody&) -> std::optional<FlowElement> { return std::nullopt; },
+                          [](const ThinAirfoil&) -> std::optional<FlowElement> { return std::nullopt; },
                           [](const auto& e) -> std::optional<FlowElement> { return FlowElement{e}; },
                       },
                       element);
+}
+
+std::string describeAirfoil(const ThinAirfoil& e) {
+    const std::string turn = e.angle != 0.0 ? std::format(", θ = {:.4g}°", e.angle * k_degrees) : std::string();
+    return std::format("{}, chord {:.4g} at {}{}, N = {}", airfoilName(e), e.chord, formatPoint(e.position), turn, e.panels);
+}
+
+// Distance from p to the segment a-b.
+double segmentDistance(Vec2 p, Vec2 a, Vec2 b) {
+    const Vec2 d = b - a;
+    const double l2 = lengthSquared(d);
+    const double t = l2 > 0.0 ? std::clamp(dot(p - a, d) / l2, 0.0, 1.0) : 0.0;
+    return length(p - (a + d * t));
+}
+
+bool segmentsCross(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
+    const double o1 = cross(b - a, c - a);
+    const double o2 = cross(b - a, d - a);
+    const double o3 = cross(d - c, a - c);
+    const double o4 = cross(d - c, b - c);
+    return ((o1 > 0.0) != (o2 > 0.0)) && ((o3 > 0.0) != (o4 > 0.0));
+}
+
+// The polyline (open) or polygon (closed) a crosses polyline b.
+bool linesCross(const std::vector<Vec2>& a, bool aClosed, const std::vector<Vec2>& b, bool bClosed) {
+    const std::size_t na = aClosed ? a.size() : a.size() - 1;
+    const std::size_t nb = bClosed ? b.size() : b.size() - 1;
+    for (std::size_t i = 0; i < na; ++i) {
+        for (std::size_t j = 0; j < nb; ++j) {
+            if (segmentsCross(a[i], a[(i + 1) % a.size()], b[j], b[(j + 1) % b.size()])) return true;
+        }
+    }
+    return false;
 }
 
 std::string describeBody(const PanelBody& e) {
@@ -69,6 +103,7 @@ const char* kindName(ElementKind kind) {
     case ElementKind::Sector: return "Sector (wedge) flow";
     case ElementKind::Wall: return "Symmetry wall";
     case ElementKind::PanelBody: return "Source-panel body";
+    case ElementKind::ThinAirfoil: return "Vortex-sheet airfoil";
     }
     return "?";
 }
@@ -82,6 +117,7 @@ SceneElement defaultElement(ElementKind kind, Vec2 position) {
     case ElementKind::Sector: return SectorFlow{.strength = 1.0, .vertex = position, .wall1 = 0.0, .wall2 = pi / 2.0};
     case ElementKind::Wall: return SymmetryWall{.point = position, .angle = 0.0};
     case ElementKind::PanelBody: return PanelBody{.position = position};
+    case ElementKind::ThinAirfoil: return ThinAirfoil{.position = position};
     }
     return UniformFlow{};
 }
@@ -107,6 +143,7 @@ std::string describe(const SceneElement& element) {
                 return std::format("through {} at {:.4g}°", formatPoint(e.point), e.angle * k_degrees);
             },
             [](const PanelBody& e) { return describeBody(e); },
+            [](const ThinAirfoil& e) { return describeAirfoil(e); },
         },
         element);
 }
@@ -119,6 +156,7 @@ std::optional<std::string> sceneElementError(const SceneElement& element) {
         return std::nullopt;
     }
     if (const auto* body = std::get_if<PanelBody>(&element)) return panelBodyError(*body);
+    if (const auto* airfoil = std::get_if<ThinAirfoil>(&element)) return thinAirfoilError(*airfoil);
     return validationError(*asFlowElement(element));
 }
 
@@ -148,6 +186,8 @@ FlowModel buildFlowModel(const Scene& scene, bool solvePanels) {
     std::vector<FlowElement> flows;
     std::vector<PanelBody> bodies;
     std::vector<std::size_t> bodyElements;
+    std::vector<ThinAirfoil> airfoils;
+    std::vector<std::size_t> airfoilElements;
     for (std::size_t i = 0; i < scene.elements.size(); ++i) {
         const SceneElement& element = scene.elements[i];
         if (const auto* wall = std::get_if<SymmetryWall>(&element)) {
@@ -155,6 +195,9 @@ FlowModel buildFlowModel(const Scene& scene, bool solvePanels) {
         } else if (const auto* body = std::get_if<PanelBody>(&element)) {
             bodies.push_back(*body);
             bodyElements.push_back(i);
+        } else if (const auto* airfoil = std::get_if<ThinAirfoil>(&element)) {
+            airfoils.push_back(*airfoil);
+            airfoilElements.push_back(i);
         } else {
             flows.push_back(*asFlowElement(element));
         }
@@ -179,7 +222,11 @@ FlowModel buildFlowModel(const Scene& scene, bool solvePanels) {
     model.freeStream = velocityFromW(freeStream);
     model.freeStreamSpeed = std::abs(freeStream);
     // Last, since the panels must cancel the normal flow of everything else, images included.
-    if (solvePanels && !bodies.empty()) model.field.panelBodies = solveSourcePanels(bodies, bodyElements, model.field);
+    if (solvePanels && (!bodies.empty() || !airfoils.empty())) {
+        PanelSolution solution = solvePanelMethods(bodies, bodyElements, airfoils, airfoilElements, model.field);
+        model.field.panelBodies = std::move(solution.bodies);
+        model.field.vortexSheets = std::move(solution.sheets);
+    }
     return model;
 }
 
@@ -195,12 +242,15 @@ std::vector<std::string> sceneWarnings(const Scene& scene, const FlowModel& mode
     std::vector<Centre> centres;
     std::vector<std::pair<std::size_t, SymmetryWall>> walls;
     std::vector<std::pair<std::size_t, std::vector<Vec2>>> bodies; // panel bodies and their vertices
+    std::vector<std::pair<std::size_t, std::vector<Vec2>>> airfoils; // thin airfoils and their camber lines
     for (std::size_t i = 0; i < elements.size(); ++i) {
         const SceneElement& e = elements[i];
         if (const auto* wall = std::get_if<SymmetryWall>(&e)) {
             walls.emplace_back(i + 1, *wall);
         } else if (const auto* body = std::get_if<PanelBody>(&e)) {
             if (!panelBodyError(*body)) bodies.emplace_back(i + 1, panelVertices(*body));
+        } else if (const auto* airfoil = std::get_if<ThinAirfoil>(&e)) {
+            if (!thinAirfoilError(*airfoil)) airfoils.emplace_back(i + 1, sheetVertices(*airfoil));
         } else if (const auto* sector = std::get_if<SectorFlow>(&e)) {
             centres.push_back({i + 1, sector->vertex});
         } else if (const std::optional<Vec2> point = singularPoint(*asFlowElement(e))) {
@@ -299,6 +349,46 @@ std::vector<std::string> sceneWarnings(const Scene& scene, const FlowModel& mode
             warnings.push_back(std::format("Source-panel bodies #{} and #{} overlap: panels of one lie inside the "
                                            "other, so the solution has no meaning.",
                                            bodies[a].first, bodies[b].first));
+        }
+    }
+    for (std::size_t a = 0; a < airfoils.size(); ++a) {
+        const auto& [number, line] = airfoils[a];
+        const auto& airfoil = std::get<ThinAirfoil>(elements[number - 1]);
+        if (!(model.freeStreamSpeed > 0.0)) {
+            warnings.push_back(std::format("Vortex-sheet airfoil #{}: there is no uniform flow, so no stream passes its "
+                                           "trailing edge and it gets no lift from one (and Cp has no reference speed).",
+                                           number));
+        } else if (const double alpha = angleOfAttack(airfoil, model.freeStream); std::abs(alpha) > 15.0 * pi / 180.0) {
+            warnings.push_back(std::format("Vortex-sheet airfoil #{} is at α = {:.3g}°. A real airfoil stalls long before; "
+                                           "potential flow keeps the flow attached, and thin-airfoil theory, linear in α, "
+                                           "drifts away from the panels.",
+                                           number, alpha * k_degrees));
+        }
+        for (const auto& [bodyNumber, vertices] : bodies) {
+            const bool inside = std::ranges::any_of(line, [&](Vec2 v) { return insidePolygon(vertices, v); });
+            if (!inside && !linesCross(line, false, vertices, true)) continue;
+            warnings.push_back(std::format("Vortex-sheet airfoil #{} runs into source-panel body #{}, so the solution "
+                                           "has no meaning.",
+                                           number, bodyNumber));
+        }
+        for (std::size_t b = a + 1; b < airfoils.size(); ++b) {
+            if (!linesCross(line, false, airfoils[b].second, false)) continue;
+            warnings.push_back(std::format("Vortex-sheet airfoils #{} and #{} cross each other, so the solution has no "
+                                           "meaning.",
+                                           number, airfoils[b].first));
+        }
+        for (const Centre& c : centres) {
+            double distance = 1e300;
+            for (std::size_t k = 0; k + 1 < line.size(); ++k) distance = std::min(distance, segmentDistance(c.point, line[k], line[k + 1]));
+            if (distance > 1e-6 * airfoil.chord) continue;
+            warnings.push_back(std::format("Element #{} lies on vortex-sheet airfoil #{}: its singular point is on the "
+                                           "sheet, where the boundary condition cannot hold.",
+                                           c.number, number));
+        }
+        if (!walls.empty()) {
+            warnings.push_back(std::format("Vortex-sheet airfoil #{} has no images in the walls, so the walls are not "
+                                           "streamlines near it (it does feel the images of the other elements).",
+                                           number));
         }
     }
     if (!model.imagesExact) {

@@ -47,6 +47,23 @@ std::optional<SweepSample> sampleSweep(const Scene& scene, ParameterRef ref, dou
         }
         sample.bodies.push_back(body);
     }
+    for (std::size_t i = 0; i < model.field.vortexSheets.size(); ++i) {
+        const std::optional<AirfoilLoading> loading = airfoilLoading(model.field, i, model.freeStream);
+        if (!loading) continue;
+        const ThinAirfoil& airfoil = model.field.vortexSheets[i].airfoil;
+        double cpMin = std::numeric_limits<double>::infinity();
+        for (std::size_t k = 0; k < loading->cpUpper.size(); ++k) cpMin = std::min({cpMin, loading->cpUpper[k], loading->cpLower[k]});
+        sample.airfoils.push_back({.position = airfoil.position,
+                                   .chord = airfoil.chord,
+                                   .alpha = loading->alpha,
+                                   .circulation = loading->circulation,
+                                   .lift = loading->clPressure * airfoil.chord,
+                                   .exactLift = loading->clKuttaJoukowski * airfoil.chord,
+                                   .cpMin = cpMin,
+                                   .cmQuarter = loading->cmQuarter,
+                                   .clTheory = loading->theory.cl,
+                                   .cmTheory = loading->theory.cmQuarter});
+    }
     return sample;
 }
 

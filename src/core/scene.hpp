@@ -13,6 +13,7 @@
 #include "core/image_system.hpp"
 #include "core/panel_method.hpp"
 #include "core/vec2.hpp"
+#include "core/vortex_sheet.hpp"
 
 #include <array>
 #include <cstddef>
@@ -23,17 +24,18 @@
 
 namespace pfl {
 
-using SceneElement = std::variant<UniformFlow, SourceSink, Vortex, Doublet, SectorFlow, SymmetryWall, PanelBody>;
+using SceneElement =
+    std::variant<UniformFlow, SourceSink, Vortex, Doublet, SectorFlow, SymmetryWall, PanelBody, ThinAirfoil>;
 
 // One per SceneElement alternative, in the same order.
-enum class ElementKind { Uniform, SourceSink, Vortex, Doublet, Sector, Wall, PanelBody };
-inline constexpr std::array<ElementKind, 7> k_elementKinds = {ElementKind::Uniform, ElementKind::SourceSink,
+enum class ElementKind { Uniform, SourceSink, Vortex, Doublet, Sector, Wall, PanelBody, ThinAirfoil };
+inline constexpr std::array<ElementKind, 8> k_elementKinds = {ElementKind::Uniform, ElementKind::SourceSink,
                                                                ElementKind::Vortex,  ElementKind::Doublet,
                                                                ElementKind::Sector,  ElementKind::Wall,
-                                                               ElementKind::PanelBody};
+                                                               ElementKind::PanelBody, ElementKind::ThinAirfoil};
 
 // Elements solved numerically (panel methods) rather than given in closed form.
-inline bool isPanelKind(ElementKind kind) { return kind == ElementKind::PanelBody; }
+inline bool isPanelKind(ElementKind kind) { return kind == ElementKind::PanelBody || kind == ElementKind::ThinAirfoil; }
 
 inline ElementKind kindOf(const SceneElement& element) { return static_cast<ElementKind>(element.index()); }
 const char* kindName(ElementKind kind);
@@ -48,7 +50,8 @@ std::string describe(const SceneElement& element);
 std::optional<std::string> sceneElementError(const SceneElement& element);
 
 // The point an element is drawn at and dragged by: the position of a source, vortex or doublet, the
-// vertex of a sector, the reference point of a wall, the centre of a panel body. nullopt for a uniform flow, which has none.
+// vertex of a sector, the reference point of a wall, the centre of a panel body, the middle of a
+// thin airfoil's chord. nullopt for a uniform flow, which has none.
 std::optional<Vec2> anchorPoint(const SceneElement& element);
 
 // `element` translated so that its anchor point is at `position` (a uniform flow is unchanged).
@@ -67,7 +70,7 @@ struct PlotSettings {
     Background background = Background::None;
     bool showSurfacePressure = false; // body surfaces coloured by Cp, pressure arrows and the Cp panel
     bool showStagnationPoints = true;
-    bool showPanelStrengths = false; // the source strength of every panel, drawn on the panel bodies
+    bool showPanelStrengths = false; // the strength of every panel: lambda on the bodies, gamma on the airfoils
     bool showParticles = true;
     bool particleTrails = true;
 };
@@ -89,8 +92,8 @@ struct FlowModel {
     double freeStreamSpeed = 0.0;     // |freeStream|; the Cp reference
 };
 
-// Panel bodies are solved against the rest of the flow (images included) unless `solvePanels` is
-// false, which leaves them out (for callers that only need the warnings).
+// Panel bodies and thin airfoils are solved against the rest of the flow (images included) unless
+// `solvePanels` is false, which leaves them out (for callers that only need the warnings).
 FlowModel buildFlowModel(const Scene& scene, bool solvePanels = true);
 
 // Human-readable notes about the scene (element numbers are 1-based, as in the Elements menu).

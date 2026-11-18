@@ -43,7 +43,12 @@ ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake, bool drawin
         ImGui::PushID(static_cast<int>(kind));
         if (ImGui::InvisibleButton("##tool", ImVec2(button, button))) action.element = kind;
         drawToolIcon(dl, buttonBackground(false), 0.78f * button, kind);
-        ImGui::SetItemTooltip("%s", kindName(kind));
+        if (kind == ElementKind::ThinAirfoil) {
+            ImGui::SetItemTooltip("%s\nThin-airfoil theory: a vortex sheet on the camber line, with the Kutta condition "
+                                  "at the trailing edge.", kindName(kind));
+        } else {
+            ImGui::SetItemTooltip("%s", kindName(kind));
+        }
         ImGui::PopID();
         if (kind == ElementKind::PanelBody) {
             if (ImGui::InvisibleButton("##draw-body", ImVec2(button, button))) action.drawBody = true;

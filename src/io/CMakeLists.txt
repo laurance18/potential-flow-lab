@@ -19,7 +19,10 @@ pfl_embed_resources(pfl_examples
         examples/panel_lifting_cylinder.json
         examples/panel_bluff_bodies.json
         examples/panel_naca2412.json
-        examples/panel_drawn_shape.json)
+        examples/panel_drawn_shape.json
+        examples/thin_flat_plate.json
+        examples/thin_naca2412.json
+        examples/thin_airfoil_and_body.json)
 
 add_library(pfl_io STATIC
     scene_io.hpp scene_io.cpp

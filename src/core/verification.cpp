@@ -574,7 +574,7 @@ SceneElement turnedElement(SceneElement element, double a) {
                 e.vertex = turned(e.vertex, a);
                 e.wall1 += a;
                 e.wall2 += a;
-            } else if constexpr (std::is_same_v<T, PanelBody>) {
+            } else if constexpr (std::is_same_v<T, PanelBody> || std::is_same_v<T, ThinAirfoil>) {
                 e.position = turned(e.position, a);
                 e.angle += a;
             } else {
@@ -613,6 +613,12 @@ SceneElement mirroredElement(SceneElement element) {
                 e.angle = -e.angle;
                 if (e.shape == PanelShape::Naca) e.nacaCamber = -e.nacaCamber;
                 for (Vec2& p : e.outline) p.y = -p.y;
+            } else if constexpr (std::is_same_v<T, ThinAirfoil>) {
+                // The camber line turns over.
+                e.position = mirroredInX(e.position);
+                e.angle = -e.angle;
+                e.nacaCamber = -e.nacaCamber;
+                e.arcCamber = -e.arcCamber;
             } else {
                 e.point = mirroredInX(e.point);
                 e.angle = -e.angle;
@@ -2524,6 +2530,507 @@ VerificationResult panelConcave() {
 }
 
 
+// --- Thin airfoils ------------------------------------------------------------------------
+
+// A thin airfoil of chord 2 at the origin, at angle of attack `alpha` in a unit stream along +x.
+Scene thinScene(CamberLine camber, double alpha, int panels, double arcCamber = 0.05) {
+    ThinAirfoil airfoil{.camber = camber, .chord = 2.0, .angle = -alpha, .panels = panels, .arcCamber = arcCamber};
+    return withPlot({.elements = {UniformFlow{}, airfoil}}, [](PlotSettings& p) {
+        p.showSurfacePressure = true;
+        p.showPanelStrengths = true;
+    });
+}
+Scene thinPlateScene() { return thinScene(CamberLine::Flat, 5.0 * deg, 40); }
+Scene thinNacaScene() { return thinScene(CamberLine::Naca, 4.0 * deg, 60); }
+Scene thinArcScene() { return thinScene(CamberLine::Arc, 3.0 * deg, 60); }
+Scene thinWithBodyScene() {
+    ThinAirfoil airfoil{.position = {-0.4, 0.6}, .chord = 2.0, .angle = -6.0 * deg, .panels = 50};
+    return withPlot({.elements = {UniformFlow{.speed = 1.2, .angle = 8.0 * deg}, airfoil,
+                                  PanelBody{.position = {1.4, -0.7}, .semiAxisA = 0.6, .semiAxisB = 0.6, .panels = 40},
+                                  Vortex{.circulation = 1.5, .position = {-2.2, -1.0}}, SymmetryWall{.point = {0.0, -2.0}}}},
+                    showSurface);
+}
+
+// The one airfoil of a scene, solved, with its loading.
+struct SolvedAirfoil {
+    FlowModel model;
+    AirfoilLoading loading;
+};
+std::optional<SolvedAirfoil> solveAirfoil(const Scene& scene) {
+    SolvedAirfoil s{.model = modelOf(scene), .loading = {}};
+    if (s.model.field.vortexSheets.size() != 1) return std::nullopt;
+    std::optional<AirfoilLoading> loading = airfoilLoading(s.model.field, 0, s.model.freeStream);
+    if (!loading) return std::nullopt;
+    s.loading = std::move(*loading);
+    return s;
+}
+
+Scene withSheetPanels(Scene scene, int panels) {
+    for (SceneElement& element : scene.elements) {
+        if (auto* airfoil = std::get_if<ThinAirfoil>(&element)) airfoil->panels = panels;
+    }
+    return scene;
+}
+
+std::string orderText(const std::vector<double>& errors) {
+    return errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], errors.back())) : std::string("—");
+}
+
+// The exact potential flow past a circular-arc camber line of chord c, camber h (a flat plate for
+// h = 0), with the Kutta condition, by the Joukowski map z = ζ + a²/ζ, c = 4a, of the circle through
+// ζ = ±a centred at i a tan β, tan β = 2h/c, radius R = a / cos β; Γ = 4πRV∞ sin(α + β). In the
+// airfoil's frame (chord along x, the middle of the chord at 0), stream V∞ at α to the chord.
+struct ArcFlow {
+    double a = 0.5;
+    double beta = 0.0;
+    double speed = 1.0;
+    double alpha = 0.0;
+
+    double radius() const { return a / std::cos(beta); }
+    double circulation() const { return 4.0 * pi * radius() * speed * std::sin(alpha + beta); }
+    double cl() const { return 2.0 * circulation() / (speed * 4.0 * a); }
+
+    std::complex<double> w(std::complex<double> z) const {
+        const std::complex<double> centre{0.0, a * std::tan(beta)};
+        const std::complex<double> root = std::sqrt(z * z - 4.0 * a * a);
+        const std::complex<double> z1 = 0.5 * (z + root);
+        const std::complex<double> z2 = 0.5 * (z - root);
+        const std::complex<double> zeta = std::abs(z1 - centre) >= std::abs(z2 - centre) ? z1 : z2; // outside the circle
+        const double r = radius();
+        const std::complex<double> u = zeta - centre;
+        const std::complex<double> dF = speed * std::polar(1.0, -alpha) - speed * std::polar(1.0, alpha) * r * r / (u * u) +
+                                        std::complex<double>(0.0, circulation() / (2.0 * pi)) / u;
+        return dF / (1.0 - a * a / (zeta * zeta));
+    }
+};
+
+VerificationResult thinPlateLift() {
+    VerificationResult r;
+    const double alpha = 5.0 * deg;
+    const double exact = 2.0 * pi * std::sin(alpha);
+    std::vector<double> errors;
+    double slopeError = 0.0;
+    double zeroLift = 0.0;
+    double moment = 0.0;
+    for (const int n : {20, 40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinPlateScene(), n));
+        if (!s || !s->loading.liftSlope || !s->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+        errors.push_back(std::abs(s->loading.clKuttaJoukowski - exact) / exact);
+        slopeError = std::abs(*s->loading.liftSlope - 2.0 * pi * std::cos(alpha)) / (2.0 * pi * std::cos(alpha));
+        zeroLift = std::abs(*s->loading.alphaZeroLift);
+        moment = s->loading.cmQuarter;
+        r.samples += n;
+        r.comparisons.push_back({std::format("α = 5°, N = {}: c_l", n), std::format("{:.7f}", s->loading.clKuttaJoukowski),
+                                 std::format("2π sin α = {:.7f}, {}", exact, orderText(errors))});
+    }
+    r.comparisons.push_back({"N = 320: dc_l/dα (per radian)", "", std::format("2π cos α = {:.6f}, error {}", 2.0 * pi * std::cos(alpha),
+                                                                               num(slopeError))});
+    r.comparisons.push_back({"N = 320: α_L0, c_m,c/4", std::format("{}, {}", num(zeroLift), num(moment)), "0, 0"});
+    const std::optional<SolvedAirfoil> small = solveAirfoil(thinScene(CamberLine::Flat, 2.0 * deg, 320));
+    if (!small) return unable("Expected one airfoil.");
+    r.comparisons.push_back({"α = 2°, N = 320: c_l", std::format("{:.7f}", small->loading.clKuttaJoukowski),
+                             std::format("2π sin α = {:.7f}; thin-airfoil theory 2πα = {:.7f}", 2.0 * pi * std::sin(2.0 * deg),
+                                         2.0 * pi * 2.0 * deg)});
+    r.error = std::max(errors.back(), slopeError);
+    r.tolerance = 1e-5;
+    r.errorLabel = "|c_l − 2π sin α| / 2π sin α and the lift slope's relative error, for N = 320";
+    r.note = "The vortex panels lie on the plate itself and are solved with its exact boundary condition, so they converge to the "
+             "exact potential flow, c_l = 2π sin α, at second order (the error falls 4× each time N doubles). Thin-airfoil theory "
+             "linearizes that to 2πα, a relative difference of α²/6: 4·10⁻⁴ at 5°, 2·10⁻⁴ at 2°. The plate's centre of pressure "
+             "is at the quarter chord (c_m,c/4 = 0) and α_L0 = 0.";
+    if (order(errors[3], errors[4]) < 1.8 || zeroLift > 1e-12 || std::abs(moment) > 1e-5) {
+        r.error = inf;
+        r.note += " The order, α_L0 or c_m is off.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinPlateStrength() {
+    VerificationResult r;
+    const double alpha = 5.0 * deg;
+    const double scale = 2.0 * std::sin(alpha); // 2 V∞ sin α
+    std::vector<double> errors;
+    std::vector<double> trailing;
+    double kutta = 0.0;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinPlateScene(), n));
+        if (!s) return unable("Expected one airfoil.");
+        const VortexSheet& sheet = s->model.field.vortexSheets.front();
+        double worst = 0.0;
+        for (std::size_t k = 0; k < sheet.gamma.size(); ++k) {
+            // Along the plate from the leading edge, written out from the vertices.
+            const double x = length(sheet.vertices[k] - sheet.vertices.front()) / 2.0;
+            if (x < 0.05) continue;
+            const double exact = scale * std::sqrt((1.0 - x) / x);
+            worst = std::max(worst, std::abs(sheet.gamma[k] - exact) / scale);
+            ++r.samples;
+        }
+        errors.push_back(worst);
+        trailing.push_back(std::abs(s->loading.trailingEdgeGamma));
+        kutta = std::max(kutta, std::abs(sheet.gamma.back()));
+        r.comparisons.push_back({std::format("N = {}: max |γ − γ_exact| / 2V∞ sin α, x/c ≥ 0.05", n), num(worst), orderText(errors)});
+    }
+    r.comparisons.push_back({"γ at the trailing edge (every N)", num(kutta), "0 (Kutta)"});
+    r.comparisons.push_back({"γ / V∞ at the last control point, N = 40 and 320", std::format("{}, {}", num(trailing.front()),
+                                                                                            num(trailing.back())),
+                             "→ 0 like √(c − x), first order"});
+    r.error = errors.back();
+    r.tolerance = 2e-3;
+    r.errorLabel = "max |γ − γ_exact| / 2V∞ sin α over the vertices with x/c ≥ 0.05, for N = 320";
+    r.note = "The exact plate has γ(x) = 2V∞ sin α √((c − x)/x): infinite at the leading edge, where the panels keep it finite "
+             "(the largest value there grows with N), and 0 at the trailing edge. Away from the leading edge the panels converge "
+             "at second order. γ(TE) = 0 is the Kutta condition, set on the trailing-edge vertex; at the last control point γ "
+             "falls like √(c − x).";
+    if (kutta != 0.0 || order(errors[2], errors[3]) < 1.7 || trailing.back() >= trailing.front()) {
+        r.error = inf;
+        r.note += " The Kutta condition or the order is off.";
+    }
+    return finish(std::move(r));
+}
+
+// Thin-airfoil theory for the NACA 4-digit mean line of camber m at p, written out again: the
+// integrals in θ₀ by Gauss–Legendre on [0, θ_p] and [θ_p, π] (dz/dx is smooth on each, with a kink at
+// x = p). Returns ∫₀^π dz/dx cos nθ₀ dθ₀ for n = 0 .. 3 and ∫ dz/dx (cos θ₀ − 1) dθ₀.
+std::array<double, 5> nacaMeanLineIntegrals(double m, double p) {
+    const auto slope = [m, p](double x) {
+        return x < p ? 2.0 * m / (p * p) * (p - x) : 2.0 * m / ((1.0 - p) * (1.0 - p)) * (p - x);
+    };
+    // 20-point Gauss–Legendre, nodes from Newton on P_20.
+    constexpr int points = 20;
+    std::array<double, points> node{};
+    std::array<double, points> weight{};
+    for (int i = 0; i < points; ++i) {
+        double x = std::cos(pi * (i + 0.75) / (points + 0.5));
+        double dp = 0.0;
+        for (int it = 0; it < 60; ++it) {
+            double p0 = 1.0;
+            double p1 = x;
+            for (int k = 2; k <= points; ++k) {
+                const double p2 = ((2 * k - 1) * x * p1 - (k - 1) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = points * (x * p1 - p0) / (x * x - 1.0);
+            x -= p1 / dp;
+        }
+        node[static_cast<std::size_t>(i)] = x;
+        weight[static_cast<std::size_t>(i)] = 2.0 / ((1.0 - x * x) * dp * dp);
+    }
+    const double thetaP = std::acos(1.0 - 2.0 * p);
+    std::array<double, 5> sums{};
+    for (const auto& [a, b] : {std::pair{0.0, thetaP}, std::pair{thetaP, pi}}) {
+        for (int i = 0; i < points; ++i) {
+            const double theta = 0.5 * (a + b) + 0.5 * (b - a) * node[static_cast<std::size_t>(i)];
+            const double w = 0.5 * (b - a) * weight[static_cast<std::size_t>(i)];
+            const double f = slope(0.5 * (1.0 - std::cos(theta)));
+            for (int n = 0; n < 4; ++n) sums[static_cast<std::size_t>(n)] += w * f * std::cos(n * theta);
+            sums[4] += w * f * (std::cos(theta) - 1.0);
+        }
+    }
+    return sums;
+}
+
+VerificationResult thinNaca() {
+    VerificationResult r;
+    const double alpha = 4.0 * deg;
+    // Thin-airfoil theory, written out.
+    const std::array<double, 5> integrals = nacaMeanLineIntegrals(0.02, 0.4);
+    const double a0 = alpha - integrals[0] / pi;
+    const double a1 = 2.0 * integrals[1] / pi;
+    const double a2 = 2.0 * integrals[2] / pi;
+    const double a3 = 2.0 * integrals[3] / pi;
+    const double zeroLift = -integrals[4] / pi;
+    const double moment = 0.25 * pi * (a2 - a1);
+    const ThinAirfoilTheory program = thinAirfoilTheory(ThinAirfoil{.camber = CamberLine::Naca}, alpha);
+    const double theoryError = std::max({std::abs(program.A[0] - a0), std::abs(program.A[1] - a1), std::abs(program.A[2] - a2),
+                                         std::abs(program.A[3] - a3), std::abs(program.alphaZeroLift - zeroLift),
+                                         std::abs(program.cmQuarter - moment)});
+    r.comparisons.push_back({"Theory at 4°: A₀, A₁, A₂, A₃",
+                             std::format("{:.6f}, {:.6f}, {:.6f}, {:.6f}", program.A[0], program.A[1], program.A[2], program.A[3]),
+                             std::format("{:.6f}, {:.6f}, {:.6f}, {:.6f}", a0, a1, a2, a3)});
+    r.comparisons.push_back({"Theory: α_L0, c_m,c/4", std::format("{:.4f}°, {:.5f}", program.alphaZeroLift / deg, program.cmQuarter),
+                             std::format("{:.4f}°, {:.5f} (Anderson: −2.077°, −0.0532)", zeroLift / deg, moment)});
+
+    std::vector<double> zero;
+    std::vector<double> cm;
+    std::vector<double> zeroSteps;
+    std::vector<double> cmSteps;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinNacaScene(), n));
+        if (!s || !s->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+        zero.push_back(*s->loading.alphaZeroLift);
+        cm.push_back(s->loading.cmQuarter);
+        if (zero.size() > 1) {
+            zeroSteps.push_back(std::abs(zero[zero.size() - 1] - zero[zero.size() - 2]));
+            cmSteps.push_back(std::abs(cm[cm.size() - 1] - cm[cm.size() - 2]));
+        }
+        r.samples += n;
+        r.comparisons.push_back({std::format("Panels, N = {}: α_L0, c_m,c/4", n), std::format("{:.5f}°, {:.6f}", zero.back() / deg, cm.back()),
+                                 zeroSteps.size() > 1 ? std::format("change from N/2: {}, {}", orderText(zeroSteps), orderText(cmSteps))
+                                                      : std::string("—")});
+    }
+    const double zeroDifference = std::abs(zero.back() - zeroLift) / std::abs(zeroLift);
+    const double cmDifference = std::abs(cm.back() - moment) / std::abs(moment);
+    r.comparisons.push_back({"N = 320 against thin-airfoil theory: relative difference of α_L0, c_m,c/4",
+                             std::format("{}, {}", num(zeroDifference), num(cmDifference)), "of order (dz/dx)² ≤ 0.01"});
+    r.error = std::max(zeroDifference, cmDifference);
+    r.tolerance = 1e-2;
+    r.errorLabel = "relative difference of α_L0 and c_m,c/4 between the panels (N = 320) and thin-airfoil theory";
+    r.note = "The theory's coefficients are computed by the program in closed form and here again by Gauss–Legendre quadrature "
+             "(they agree to rounding). The panels apply the boundary condition on the curved camber line itself, which the "
+             "theory moves onto the chord: what is left between them is the linearization, of the order of the camber line's "
+             "slope squared (at most 0.1² for the NACA 2412). The panels themselves converge at second order: the change from "
+             "one N to the next falls 4× each time.";
+    if (theoryError > 1e-12 || order(zeroSteps[1], zeroSteps[2]) < 1.7 || order(cmSteps[1], cmSteps[2]) < 1.7) {
+        r.error = inf;
+        r.note += theoryError > 1e-12 ? " The program's theory differs from the quadrature." : " The order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinArc() {
+    VerificationResult r;
+    const double alpha = 3.0 * deg;
+    const ArcFlow exact{.a = 0.5, .beta = std::atan(2.0 * 0.05), .speed = 1.0, .alpha = alpha};
+    std::vector<double> clErrors;
+    std::vector<double> fieldErrors;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinArcScene(), n));
+        if (!s) return unable("Expected one airfoil.");
+        clErrors.push_back(std::abs(s->loading.clKuttaJoukowski - exact.cl()) / exact.cl());
+        // Every node at least 0.1c from the camber line, against the conformal map (the airfoil is
+        // at the origin, turned by -α).
+        const VortexSheet& sheet = s->model.field.vortexSheets.front();
+        double worst = 0.0;
+        for (int j = 0; j < k_gridRows; ++j) {
+            for (int i = 0; i < k_gridColumns; ++i) {
+                const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+                if (sheet.distanceTo(p) < 0.2) continue;
+                const Vec2 local = turned(p, alpha);
+                const std::complex<double> w = exact.w({local.x, local.y}) * std::polar(1.0, alpha);
+                worst = std::max(worst, std::abs(s->model.field.complexVelocity(p) - w));
+                if (n == 320) ++r.samples;
+            }
+        }
+        fieldErrors.push_back(worst);
+        r.comparisons.push_back({std::format("N = {}: c_l, max |V − V_exact| / V∞ (≥ 0.1c away)", n),
+                                 std::format("{:.7f}, {}", s->loading.clKuttaJoukowski, num(worst)),
+                                 std::format("{:.7f}; {}, {}", exact.cl(), orderText(clErrors), orderText(fieldErrors))});
+    }
+    const std::optional<SolvedAirfoil> fine = solveAirfoil(withSheetPanels(thinArcScene(), 320));
+    if (!fine || !fine->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+    r.comparisons.push_back({"N = 320: α_L0", std::format("{:.5f}°", *fine->loading.alphaZeroLift / deg),
+                             std::format("−β = {:.5f}° (thin-airfoil theory −2h/c = {:.5f}°)", -exact.beta / deg, -0.1 / deg)});
+    r.comparisons.push_back({"Thin-airfoil theory's c_l: on the arc's own slope, and on a parabola of the same camber",
+                             std::format("{:.7f}", fine->loading.theory.cl), std::format("2π(α + 2h/c) = {:.7f}", 2.0 * pi * (alpha + 0.1))});
+    r.error = std::max(clErrors.back(), fieldErrors.back());
+    r.tolerance = 1e-4;
+    r.errorLabel = "|c_l − c_l,exact| / c_l,exact and max |V − V_exact| / V∞ at least 0.1c from the arc, for N = 320";
+    r.note = "The Joukowski map z = ζ + a²/ζ turns a circle through ζ = ±a, centred at i a tan β, into a circular arc of chord "
+             "4a and camber h/c = ½ tan β; with the Kutta condition at the trailing edge, c_l = 2π sin(α + β) / cos β and "
+             "α_L0 = −β, exactly. The panels converge to it at second order, at the surface and away from it; thin-airfoil "
+             "theory, 2π(α + 2h/c), is the linearization.";
+    if (order(clErrors[2], clErrors[3]) < 1.7 || order(fieldErrors[2], fieldErrors[3]) < 0.9 ||
+        std::abs(*fine->loading.alphaZeroLift + exact.beta) > 1e-5) {
+        r.error = inf;
+        r.note += " The order or α_L0 is off.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinKuttaJoukowski() {
+    VerificationResult r;
+    const std::optional<SolvedAirfoil> naca = solveAirfoil(withSheetPanels(thinNacaScene(), 80));
+    const std::optional<SolvedAirfoil> plate = solveAirfoil(withSheetPanels(thinPlateScene(), 80));
+    if (!naca || !plate) return unable("Expected one airfoil.");
+    const VortexSheet& sheet = naca->model.field.vortexSheets.front();
+    const double gamma = sheet.circulation;
+
+    // ∮ V·dl counter-clockwise on a circle around the airfoil: −Γ (Γ > 0 is clockwise).
+    double worst = 0.0;
+    for (const double radius : {1.2, 4.0}) { // inside and beyond the Laurent series' two radii
+        constexpr int n = 4096;
+        double circulation = 0.0;
+        for (int k = 0; k < n; ++k) {
+            const double t = 2.0 * pi * k / n;
+            const Vec2 tangent{-std::sin(t), std::cos(t)};
+            circulation += dot(naca->model.field.velocity(Vec2{std::cos(t), std::sin(t)} * radius), tangent) * radius * 2.0 * pi / n;
+        }
+        worst = std::max(worst, std::abs(-circulation - gamma) / gamma);
+        r.samples += n;
+        r.comparisons.push_back({std::format("−∮ V·dl on the circle r = {}", radius), std::format("{:.12f}", -circulation),
+                                 std::format("Γ = ∫γ ds = {:.12f}", gamma)});
+    }
+    // Blasius on the same circles: L′ = ρV∞Γ across the stream, no drag.
+    for (const double radius : {1.2, 4.0}) {
+        const Complex f = blasiusForce(naca->model.field, {}, radius);
+        const double drag = f.real();
+        const double lift = -f.imag();
+        worst = std::max({worst, std::abs(lift - gamma) / gamma, std::abs(drag) / gamma});
+        r.samples += 4096;
+        r.comparisons.push_back({std::format("Blasius on r = {}: (D′, L′) / ρ", radius), std::format("({}, {:.12f})", num(drag), lift),
+                                 std::format("(0, V∞Γ = {:.12f})", gamma)});
+    }
+    // Lift from ΔCp along the chord: on a plate it is the Kutta–Joukowski lift; with camber dx = ds cos ε.
+    const double plateDifference =
+        std::abs(plate->loading.clPressure - plate->loading.clKuttaJoukowski) / plate->loading.clKuttaJoukowski;
+    worst = std::max(worst, plateDifference);
+    r.comparisons.push_back({"Flat plate at 5°: c_l from ∫ΔCp d(x/c) and 2Γ/(V∞c)",
+                             std::format("{:.12f}, {:.12f}", plate->loading.clPressure, plate->loading.clKuttaJoukowski), "equal"});
+    double bound = 0.0; // (2 / V∞c) max(1 − cos ε) ∫|γ| ds
+    double integral = 0.0;
+    double slope = 0.0;
+    for (std::size_t j = 0; j < sheet.size(); ++j) {
+        const Vec2 d = sheet.vertices[j + 1] - sheet.vertices[j];
+        slope = std::max(slope, 1.0 - std::abs(dot(d, chordDirection(sheet.airfoil))) / length(d));
+        integral += 0.5 * (std::abs(sheet.gamma[j]) + std::abs(sheet.gamma[j + 1])) * length(d);
+    }
+    bound = 2.0 * slope * integral / 2.0;
+    const double nacaDifference = std::abs(naca->loading.clPressure - naca->loading.clKuttaJoukowski);
+    r.comparisons.push_back({"NACA 2412 at 4°: c_l from ΔCp and 2Γ/(V∞c)",
+                             std::format("{:.6f}, {:.6f}", naca->loading.clPressure, naca->loading.clKuttaJoukowski),
+                             std::format("differ by {} ≤ (2/V∞c) max(1 − cos ε) ∫|γ| ds = {}", num(nacaDifference), num(bound))});
+    r.error = worst;
+    r.tolerance = 1e-10;
+    r.errorLabel = "relative errors of ∮ V·dl against Γ, of the Blasius lift against ρV∞Γ, the Blasius drag, and of the plate's "
+                   "ΔCp lift against Kutta–Joukowski";
+    r.note = "The circulation and the force come from the velocity the plot uses, on circles around the airfoil (the trapezoidal "
+             "rule, which converges geometrically there): close in, where the panels are summed, and far out, where the Laurent "
+             "series is. ∮ W² dz only sees the 1/z term of W, so the whole force is the Kutta–Joukowski lift ρV∞Γ, with no drag "
+             "(the leading-edge suction included). Thin-airfoil theory integrates ΔCp = 2γ/V∞ along the chord; γ is per unit "
+             "length of the camber line, so with camber that falls short of 2Γ/(V∞c) by terms of order ε², within the bound.";
+    if (nacaDifference > bound) {
+        r.error = inf;
+        r.note += " The ΔCp lift is outside the bound.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinSums() {
+    // The Biot–Savart integral W = (i/2π) ∫ γ(s) ds / (z − z(s)) along each panel, by 64-point
+    // Gauss–Legendre quadrature, against the program's closed form (and Laurent series far away).
+    const FlowModel model = modelOf(withSheetPanels(thinNacaScene(), 80));
+    if (model.field.vortexSheets.size() != 1) return unable("Expected one airfoil.");
+    const VortexSheet& sheet = model.field.vortexSheets.front();
+    constexpr int points = 64;
+    std::array<double, points> node{};
+    std::array<double, points> weight{};
+    for (int i = 0; i < points; ++i) {
+        double x = std::cos(pi * (i + 0.75) / (points + 0.5));
+        double dp = 0.0;
+        for (int it = 0; it < 60; ++it) {
+            double p0 = 1.0;
+            double p1 = x;
+            for (int k = 2; k <= points; ++k) {
+                const double p2 = ((2 * k - 1) * x * p1 - (k - 1) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = points * (x * p1 - p0) / (x * x - 1.0);
+            x -= p1 / dp;
+        }
+        node[static_cast<std::size_t>(i)] = 0.5 * (1.0 + x);
+        weight[static_cast<std::size_t>(i)] = 1.0 / ((1.0 - x * x) * dp * dp);
+    }
+    VerificationResult r;
+    double nearError = 0.0;
+    double farError = 0.0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            if (sheet.distanceTo(p) < 0.1) continue;
+            std::complex<double> direct{};
+            for (std::size_t k = 0; k < sheet.size(); ++k) {
+                const Vec2 a = sheet.vertices[k];
+                const Vec2 b = sheet.vertices[k + 1];
+                for (int q = 0; q < points; ++q) {
+                    const double t = node[static_cast<std::size_t>(q)];
+                    const Vec2 s = a + (b - a) * t;
+                    const double g = sheet.gamma[k] + (sheet.gamma[k + 1] - sheet.gamma[k]) * t;
+                    direct += weight[static_cast<std::size_t>(q)] * length(b - a) * g / std::complex<double>(p.x - s.x, p.y - s.y);
+                }
+            }
+            direct *= std::complex<double>(0.0, 1.0 / (2.0 * pi));
+            const double error = std::abs(sheet.complexVelocity(p) - direct);
+            double& worst = length(p - sheet.centre) > 2.0 * sheet.radius ? farError : nearError;
+            worst = std::max(worst, error);
+            ++r.samples;
+        }
+    }
+    // Rounding scales with the largest strength (at the leading edge, some 30 V∞), not with V∞.
+    const double largest = *std::ranges::max_element(sheet.gamma, {}, [](double g) { return std::abs(g); });
+    nearError /= std::abs(largest);
+    farError /= std::abs(largest);
+    r.error = std::max(nearError, farError);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |W − W_quadrature| / max|γ| over every node 0.05c or more from the sheet";
+    r.comparisons = {{"Nearer than 2 radii (closed form, panel by panel)", num(nearError), "0"},
+                     {"Farther (Laurent series)", num(farError), "0"}};
+    r.note = std::format("{} nodes, a NACA 2412 camber line of 80 panels (largest γ = {:.4g} V∞, at the leading edge). Each "
+                         "panel's γ varies linearly, and its velocity is the logarithm formula "
+                         "(i e^(−iθ)/2π)[Λ(γ₁(1 − ζ/L) + γ₂ ζ/L) − (γ₂ − γ₁)].",
+                         count(r.samples), std::abs(largest));
+    return finish(std::move(r));
+}
+
+VerificationResult thinBoundary() {
+    VerificationResult r;
+    const FlowModel model = modelOf(thinWithBodyScene());
+    if (model.field.vortexSheets.size() != 1 || model.field.panelBodies.size() != 1) {
+        return unable("Expected an airfoil and a panel body.");
+    }
+    const VortexSheet& sheet = model.field.vortexSheets.front();
+    const SourcePanels& body = model.field.panelBodies.front();
+    double scale = 0.0;
+    double sheetResidual = 0.0;
+    double bodyResidual = 0.0;
+    for (std::size_t i = 0; i < sheet.size(); ++i) {
+        const Vec2 v = model.field.velocity(sheet.controlPoints[i]);
+        sheetResidual = std::max(sheetResidual, std::abs(dot(v, sheet.normals[i])));
+        scale = std::max(scale, length(v));
+        ++r.samples;
+    }
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const Vec2 v = model.field.velocity(body.controlPoints[i]);
+        bodyResidual = std::max(bodyResidual, std::abs(dot(v, body.normals[i])));
+        scale = std::max(scale, length(v));
+        ++r.samples;
+    }
+    // Just off the sheet on either side: the normal velocity is continuous across it, the tangential
+    // one jumps by γ.
+    double jump = 0.0;
+    for (std::size_t i = 0; i < sheet.size(); ++i) {
+        // 10⁻⁷ of the panel's length off it: the velocity there differs from the limit by about that
+        // fraction of γ.
+        const Vec2 off = sheet.normals[i] * (1e-7 * sheet.lengths[i]);
+        const Vec2 above = model.field.velocity(sheet.controlPoints[i] + off);
+        const Vec2 below = model.field.velocity(sheet.controlPoints[i] - off);
+        jump = std::max(jump, std::abs(dot(above - below, sheet.tangents[i]) - sheet.strengthAt(i)) / std::abs(sheet.strengthAt(i)));
+    }
+    // The airfoil alone: the body and the rest change its circulation.
+    Scene alone = thinWithBodyScene();
+    alone.elements.resize(2);
+    const FlowModel aloneModel = modelOf(alone);
+    r.comparisons = {{"Airfoil: max |v·n| / max|V| at the control points", num(sheetResidual / scale), "0"},
+                     {"Source-panel circle: max |v·n| / max|V|", num(bodyResidual / scale), "0"},
+                     {"Across the sheet, 10⁻⁷ panel lengths each side: max |Δv_t − γ| / |γ|", num(jump), "0, to about 10⁻⁷"},
+                     {"Γ with the circle, the vortex and the wall image, and alone",
+                      std::format("{:.6f}, {:.6f}", sheet.circulation, aloneModel.field.vortexSheets.front().circulation),
+                      "they differ: the airfoil feels the rest"}};
+    r.error = std::max(sheetResidual, bodyResidual) / scale;
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |v·n| / max|V| at every control point of the airfoil and the body";
+    r.note = "The airfoil, a source-panel circle, a vortex and its image in a wall: one dense system for the vortex and the source "
+             "panels together, against the rest of the flow. A direct solve, so the condition holds to rounding at every "
+             "control point.";
+    if (jump > 1e-5 || std::abs(sheet.circulation - aloneModel.field.vortexSheets.front().circulation) < 1e-6) {
+        r.error = inf;
+        r.note += " The jump across the sheet is off, or the airfoil does not feel the rest.";
+    }
+    return finish(std::move(r));
+}
+
+
 // --- The list -----------------------------------------------------------------------------
 
 constexpr const char* k_foundations = "Foundations";
@@ -2534,6 +3041,7 @@ constexpr const char* k_forces = "Pressure and forces";
 constexpr const char* k_lines = "Streamlines and equipotentials";
 constexpr const char* k_tracers = "Particles and dye";
 constexpr const char* k_panels = "Panel methods";
+constexpr const char* k_thin = "Thin airfoils";
 
 const VerificationCheck k_checks[] = {
     {k_foundations, "Laplace's equation",
@@ -2787,6 +3295,48 @@ const VerificationCheck k_checks[] = {
      "A crescent, which no point inside it sees whole: check v·n at its control points and the velocity at every node "
      "outside against the panels summed directly.",
      crescentScene, panelConcave},
+
+    {k_thin, "Flat plate: lift",
+     "A flat plate in potential flow with the Kutta condition has Γ = πcV∞ sin α, so c_l = 2π sin α, lift slope 2π cos α, "
+     "α_L0 = 0 and c_m,c/4 = 0. Thin-airfoil theory gives 2πα, the same to first order in α.",
+     "Solve a vortex-sheet plate at 5° with 20 to 320 panels; measure c_l, the order, the lift slope, α_L0 and c_m, and c_l at "
+     "2° against both formulas.",
+     thinPlateScene, thinPlateLift},
+    {k_thin, "Flat plate: vortex strength and Kutta condition",
+     "On a flat plate γ(x) = 2V∞ sin α √((c − x)/x): infinite at the leading edge and 0 at the trailing edge, where the Kutta "
+     "condition makes the flow leave smoothly.",
+     "Compare γ at every vertex from x/c = 0.05 on, for 40 to 320 panels, and look at γ at and next to the trailing edge.",
+     thinPlateScene, thinPlateStrength},
+    {k_thin, "NACA 2412 mean line",
+     "Thin-airfoil theory: A₀ = α − (1/π)∫ dz/dx dθ₀, Aₙ = (2/π)∫ dz/dx cos nθ₀ dθ₀, α_L0 = −(1/π)∫ dz/dx (cos θ₀ − 1) dθ₀ "
+     "and c_m,c/4 = (π/4)(A₂ − A₁). For the NACA 2412: α_L0 = −2.08°, c_m,c/4 = −0.053.",
+     "Compute the theory again by quadrature, then solve the camber line at 4° with 40 to 320 panels: α_L0 and c_m against "
+     "the theory, and the order of convergence.",
+     thinNacaScene, thinNaca},
+    {k_thin, "Circular arc: the exact solution",
+     "The Joukowski map turns the flow past a circle into the exact flow past a circular arc of camber h/c = ½ tan β: with the "
+     "Kutta condition c_l = 2π sin(α + β)/cos β and α_L0 = −β.",
+     "Solve an arc of 5% camber at 3° with 40 to 320 panels: c_l, α_L0 and the velocity at every node at least 0.1c from it, "
+     "against the conformal map.",
+     thinArcScene, thinArc},
+    {k_thin, "Kutta–Joukowski lift and circulation",
+     "Around the airfoil ∮ V·dl = −Γ (counter-clockwise), and the force from the far field (Blasius) is L′ = ρV∞Γ with no "
+     "drag. Thin-airfoil theory's c_l = ∫ΔCp d(x/c) with ΔCp = 2γ/V∞ is the same lift to first order.",
+     "Integrate V·dl and W² dz on two circles around a NACA 2412 camber line (inside and beyond the far-field series), and "
+     "integrate ΔCp along the chord of a plate and of the NACA 2412.",
+     thinNacaScene, thinKuttaJoukowski},
+    {k_thin, "Vortex panel sums, near and far",
+     "The velocity of a vortex sheet is the Biot–Savart integral W = (i/2π) ∫ γ(s) ds / (z − z(s)) along it.",
+     "Integrate it numerically (64-point Gauss–Legendre on every panel) at every node of the view away from a NACA 2412 "
+     "camber line, and compare with the program's closed form and far-field series.",
+     thinNacaScene, thinSums},
+    {k_thin, "No flow through the camber line",
+     "γ is chosen so that no fluid crosses the camber line at any control point, together with the source panels of any "
+     "body, in the flow of every other element. Across the sheet the normal velocity is continuous and the tangential one "
+     "jumps by γ.",
+     "An airfoil beside a source-panel circle, with a vortex and a wall: check v·n at every control point of both, the jump "
+     "across the sheet, and that the airfoil's circulation changes with the others there.",
+     thinWithBodyScene, thinBoundary},
 };
 
 } // namespace

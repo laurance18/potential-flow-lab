@@ -73,11 +73,13 @@ void drawViewMenu(PlotSettings& plot, bool parameterPanel, MainMenuActions& acti
                           "and the integrated lift and drag.");
     actions.plotChanged |= ImGui::Checkbox("Stagnation points", &plot.showStagnationPoints);
     ImGui::SetItemTooltip("Mark the points where the velocity is zero (Cp = 1) with diamonds.");
-    actions.plotChanged |= ImGui::Checkbox("Panel source strengths", &plot.showPanelStrengths);
+    actions.plotChanged |= ImGui::Checkbox("Panel strengths (λ, γ)", &plot.showPanelStrengths);
     ImGui::SetItemTooltip("On every source-panel body, a stick on each panel with its length proportional to the\n"
                           "panel's source strength λ: outwards (green) for a source, inwards (red) for a sink.\n"
-                          "The line through their tips is the strength distribution around the body.\n"
-                          "Hover a panel for its numbers.");
+                          "On every vortex-sheet airfoil, a stick at each vertex proportional to the vortex strength γ:\n"
+                          "above the camber line (amber) for γ > 0, clockwise, below it (cyan) for γ < 0.\n"
+                          "The line through their tips is the strength distribution (on an airfoil, its loading ΔCp).\n"
+                          "Hover a stick for its numbers.");
     actions.plotChanged |= ImGui::Checkbox("Tracer particles", &plot.showParticles);
     ImGui::BeginDisabled(!plot.showParticles);
     actions.plotChanged |= ImGui::Checkbox("Particle trails", &plot.particleTrails);

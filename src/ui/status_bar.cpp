@@ -71,11 +71,17 @@ void drawStatusBar(ImVec2 pos, ImVec2 size, const StatusInfo& info) {
         const auto worst = std::ranges::max_element(info.panelBodies, {}, &PanelStatus::relativeNormalSpeed);
         ImGui::Text("Panels: max |v·n| / |V| = %.1e", worst->relativeNormalSpeed);
         if (ImGui::BeginItemTooltip()) {
-            ImGui::TextUnformatted("Flow through each source-panel body at its control points, and its net source "
-                                   "strength\nΣλs (0 for the exact solution of a closed body; it shrinks as N grows):");
+            ImGui::TextUnformatted("Flow through each source-panel body and vortex-sheet airfoil at its control points; the "
+                                   "net source\nstrength Σλs of a body (0 for the exact solution of a closed body; it "
+                                   "shrinks as N grows), the circulation of an airfoil:");
             for (const PanelStatus& b : info.panelBodies) {
-                ImGui::Text("Body #%zu (N = %d): max |v·n| / max |V| = %.2e,  Σλs / (V∞ · perimeter) = %.2e", b.number,
-                            b.panels, b.relativeNormalSpeed, b.relativeNetSource);
+                if (b.airfoil) {
+                    ImGui::Text("Airfoil #%zu (N = %d): max |v·n| / max |V| = %.2e,  Γ = %.5g,  γ(TE) = 0 (Kutta)", b.number,
+                                b.panels, b.relativeNormalSpeed, b.circulation);
+                } else {
+                    ImGui::Text("Body #%zu (N = %d): max |v·n| / max |V| = %.2e,  Σλs / (V∞ · perimeter) = %.2e", b.number,
+                                b.panels, b.relativeNormalSpeed, b.relativeNetSource);
+                }
             }
             ImGui::EndTooltip();
         }

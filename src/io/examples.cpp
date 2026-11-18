@@ -56,6 +56,17 @@ constexpr ExampleScene k_examples[] = {
     {"panel_drawn_shape.json", "Source panels: a drawn shape",
      "A body drawn as 14 points, joined by a smooth curve and cut into 80 panels.\n"
      "Draw your own with the pencil tool below the source-panel body."},
+    {"thin_flat_plate.json", "Thin airfoil: flat plate at 5°",
+     "A flat plate of chord 3 at α = 5° as a vortex sheet of 40 panels, γ = 0 at the trailing edge (Kutta).\n"
+     "The flow leaves the trailing edge smoothly; c_l = 2π sin α = 0.548 (thin-airfoil theory: 2πα = 0.548).\n"
+     "The side panel compares ΔCp with 4α√((c − x)/x)."},
+    {"thin_naca2412.json", "Thin airfoil: NACA 2412 mean line at 4°",
+     "The camber line of the NACA 2412 as a vortex sheet of 60 panels, at α = 4°.\n"
+     "Thin-airfoil theory: α_L0 = −2.08°, c_l = 2π(α − α_L0) = 0.666, c_m,c/4 = −0.053.\n"
+     "Sweep α in the Parameters panel for the c_l-α line."},
+    {"thin_airfoil_and_body.json", "Thin airfoil above a source-panel body",
+     "A NACA 2412 camber line at α = 5° above a flat ellipse: the vortex sheet and the source panels\n"
+     "are solved together, so each feels the other. Compare its c_l with the airfoil alone."},
 };
 
 } // namespace

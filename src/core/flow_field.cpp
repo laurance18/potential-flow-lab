@@ -27,6 +27,7 @@ Complex FlowField::complexVelocity(Vec2 p) const {
         if (!within(row, p, singularRadius)) w += pfl::complexVelocity(row, p);
     }
     for (const SourcePanels& body : panelBodies) w += body.complexVelocity(p);
+    for (const VortexSheet& sheet : vortexSheets) w += sheet.complexVelocity(p);
     return w;
 }
 
@@ -39,6 +40,7 @@ Complex FlowField::complexPotential(Vec2 p) const {
         if (!within(row, p, singularRadius)) f += pfl::complexPotential(row, p);
     }
     for (const SourcePanels& body : panelBodies) f += body.complexPotential(p);
+    for (const VortexSheet& sheet : vortexSheets) f += sheet.complexPotential(p);
     return f;
 }
 
@@ -56,7 +58,14 @@ const SourcePanels* FlowField::panelBodyAt(Vec2 p) const {
 
 bool FlowField::nearSingularity(Vec2 p, double radius) const {
     return std::ranges::any_of(elements, [p, radius](const FlowElement& e) { return within(e, p, radius); }) ||
-           std::ranges::any_of(rows, [p, radius](const PeriodicRow& r) { return within(r, p, radius); });
+           std::ranges::any_of(rows, [p, radius](const PeriodicRow& r) { return within(r, p, radius); }) ||
+           std::ranges::any_of(vortexSheets, [p, radius](const VortexSheet& s) {
+               return lengthSquared(p - s.leadingEdge()) < radius * radius;
+           });
+}
+
+bool FlowField::crossesSheet(Vec2 a, Vec2 b) const {
+    return std::ranges::any_of(vortexSheets, [a, b](const VortexSheet& s) { return s.crossedBy(a, b); });
 }
 
 std::vector<Vec2> FlowField::singularPoints(const Rect& region) const {

@@ -116,6 +116,56 @@ void drawPanelBodies(ImDrawList* dl, const FlowField& field) {
     }
 }
 
+// Thin airfoils: the camber line as a thin solid line on a dark casing, its vertices marked while
+// they are far enough apart to show the panels.
+void drawVortexSheets(ImDrawList* dl, const FlowField& field) {
+    const float s = uiScale();
+    std::vector<ImVec2> pixels;
+    for (const VortexSheet& sheet : field.vortexSheets) {
+        pixels.resize(sheet.vertices.size());
+        std::ranges::transform(sheet.vertices, pixels.begin(), toPixels);
+        const int n = static_cast<int>(pixels.size());
+        dl->AddPolyline(pixels.data(), n, IM_COL32(20, 22, 30, 230), ImDrawFlags_None, 4.5f * s);
+        dl->AddPolyline(pixels.data(), n, k_sheetColor, ImDrawFlags_None, 2.2f * s);
+        float shortest = 1e30f;
+        for (int k = 0; k + 1 < n; ++k) {
+            const ImVec2 d = pixels[static_cast<std::size_t>(k + 1)] - pixels[static_cast<std::size_t>(k)];
+            shortest = std::min(shortest, std::sqrt(d.x * d.x + d.y * d.y));
+        }
+        if (shortest < 7.0f * s) continue;
+        for (const ImVec2 p : pixels) dl->AddCircleFilled(p, 1.8f * s, k_sheetColor);
+    }
+}
+
+// The direction of an airfoil's strength stick at vertex k: the mean of the normals of the panels
+// that meet there (towards the upper side), as a screen direction.
+ImVec2 sheetStickDirection(const VortexSheet& sheet, std::size_t k) {
+    const std::size_t n = sheet.size();
+    const Vec2 normal = k == 0 ? sheet.normals.front() : k == n ? sheet.normals.back() : sheet.normals[k - 1] + sheet.normals[k];
+    return normalized({static_cast<float>(normal.x), static_cast<float>(-normal.y)}); // screen y points down
+}
+
+// The scale of a set of strengths: their largest size, but no more than 3 times the median (see
+// strengthScale()).
+double cappedScale(std::vector<double> sizes) {
+    if (sizes.empty()) return 0.0;
+    const auto middle = sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2);
+    std::ranges::nth_element(sizes, middle);
+    const double median = *middle;
+    const double largest = *std::ranges::max_element(sizes);
+    return median > 0.0 ? std::min(largest, 3.0 * median) : largest;
+}
+
+// The gamma that gets a full-length stick on the airfoils. The leading edge, where the exact gamma is
+// infinite, gets a stick cut short.
+double sheetStrengthScale(const FlowField& field) {
+    std::vector<double> sizes;
+    for (const VortexSheet& sheet : field.vortexSheets) {
+        for (const double gamma : sheet.gamma) sizes.push_back(std::abs(gamma));
+    }
+    return cappedScale(std::move(sizes));
+}
+
 // The strength that gets a full-length stick: the largest |lambda| of all the panels, but no more than
 // 3 times the median, so that the huge strengths near a sharp trailing edge (where the exact flow is
 // singular, and the panels are short) do not shrink every other stick to nothing; theirs are cut
@@ -125,12 +175,7 @@ double strengthScale(const FlowField& field) {
     for (const SourcePanels& body : field.panelBodies) {
         for (const double lambda : body.strengths) sizes.push_back(std::abs(lambda));
     }
-    if (sizes.empty()) return 0.0;
-    const auto middle = sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2);
-    std::ranges::nth_element(sizes, middle);
-    const double median = *middle;
-    const double largest = *std::ranges::max_element(sizes);
-    return median > 0.0 ? std::min(largest, 3.0 * median) : largest;
+    return cappedScale(std::move(sizes));
 }
 
 // A stick's length in pixels: proportional to lambda, cut at 1.25 full lengths.
@@ -172,6 +217,38 @@ void drawPanelStrengths(ImDrawList* dl, const FlowField& field, float perUnit,
             tips.push_back(tip);
         }
         dl->AddPolyline(tips.data(), static_cast<int>(tips.size()), IM_COL32(235, 235, 235, 150), ImDrawFlags_Closed, 1.2f * s);
+    }
+}
+
+// The vortex strength gamma at every vertex of the airfoils: a stick normal to the camber line,
+// towards the upper side for gamma > 0 (clockwise: the flow over the top is faster) and below for
+// gamma < 0, its length proportional to gamma, and a line through the tips (the loading, as Delta Cp
+// = 2 gamma / V_inf). `hovered` (sheet, vertex) is highlighted.
+void drawSheetStrengths(ImDrawList* dl, const FlowField& field, float perUnit,
+                        std::optional<std::pair<std::size_t, std::size_t>> hovered) {
+    const float s = uiScale();
+    std::vector<ImVec2> tips;
+    for (std::size_t a = 0; a < field.vortexSheets.size(); ++a) {
+        const VortexSheet& sheet = field.vortexSheets[a];
+        tips.clear();
+        for (std::size_t k = 0; k < sheet.vertices.size(); ++k) {
+            const double gamma = sheet.gamma[k];
+            const ImVec2 base = toPixels(sheet.vertices[k]);
+            const ImVec2 out = sheetStickDirection(sheet, k);
+            const float length = stickLength(gamma, perUnit);
+            const ImVec2 tip = base + out * length;
+            const bool highlight = hovered && hovered->first == a && hovered->second == k;
+            const ImU32 colour = gamma >= 0.0 ? k_vortexColor : k_sectorColor;
+            dl->AddLine(base, tip, highlight ? k_highlightColor : fadeColor(colour, 0.85f), (highlight ? 3.0f : 1.8f) * s);
+            if (std::abs(length) < std::abs(static_cast<float>(gamma) * perUnit)) {
+                const ImVec2 across{-out.y, out.x};
+                dl->AddLine(tip - across * (4.0f * s), tip + across * (4.0f * s), highlight ? k_highlightColor : colour, 2.0f * s);
+            } else if (gamma != 0.0 || highlight) {
+                dl->AddCircleFilled(tip, (highlight ? 3.5f : 2.0f) * s, highlight ? k_highlightColor : colour);
+            }
+            tips.push_back(tip);
+        }
+        dl->AddPolyline(tips.data(), static_cast<int>(tips.size()), IM_COL32(235, 235, 235, 150), ImDrawFlags_None, 1.2f * s);
     }
 }
 
@@ -523,6 +600,11 @@ void drawMarker(ImDrawList* dl, const SceneElement& element, const Rect& limits,
         dl->AddCircle(c, 4.5f * s, colour, 0, 1.5f * s);
         dl->AddLine({c.x - 7.0f * s, c.y}, {c.x + 7.0f * s, c.y}, colour, 1.2f * s);
         dl->AddLine({c.x, c.y - 7.0f * s}, {c.x, c.y + 7.0f * s}, colour, 1.2f * s);
+    } else if (const auto* airfoil = std::get_if<ThinAirfoil>(&element)) {
+        // The camber line is drawn with the flow (drawVortexSheets); this is the middle of its chord.
+        const ImVec2 c = toPixels(airfoil->position);
+        dl->AddCircleFilled(c, 4.0f * s, IM_COL32(20, 22, 30, 230));
+        dl->AddCircle(c, 4.0f * s, fadeColor(k_sheetColor, alpha), 0, 1.5f * s);
     } else if (const auto* wall = std::get_if<SymmetryWall>(&element)) {
         double t0 = -1e300;
         double t1 = 1e300;
@@ -563,6 +645,18 @@ float hitDistance(const SceneElement& element, ImVec2 mouse, const Rect& limits,
         const float centre = std::sqrt(d.x * d.x + d.y * d.y);
         const bool inside = solved != nullptr && solved->contains(toWorld(mouse));
         return inside ? std::min(centre, 0.9f * k_hitRadiusPx * uiScale()) : centre;
+    }
+    if (const auto* airfoil = std::get_if<ThinAirfoil>(&element)) {
+        // Grabbed by the middle of its chord, or anywhere along the camber line.
+        const ImVec2 d = toPixels(airfoil->position) - mouse;
+        float best = std::sqrt(d.x * d.x + d.y * d.y);
+        if (thinAirfoilError(*airfoil)) return best;
+        const std::vector<Vec2> line = sheetVertices(*airfoil);
+        for (std::size_t k = 0; k + 1 < line.size(); ++k) {
+            const float along = distanceToSegment(mouse, toPixels(line[k]), toPixels(line[k + 1]));
+            best = std::min(best, along + 0.4f * k_hitRadiusPx * uiScale()); // the marker wins near it
+        }
+        return best;
     }
     if (const auto* e = std::get_if<SymmetryWall>(&element)) {
         double t0 = -1e300;
@@ -784,17 +878,22 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         drawStreamlines(dl, layers.streamlines, scene.plot.showArrows);
         drawDye(dl, layers.dye);
         drawDividingStreamlines(dl, layers.dividingLines, scene.plot.showArrows);
+        drawVortexSheets(dl, model.field);
         drawSurfaces(dl, layers.surfaces, model.field);
 
-        // The panel whose strength stick is under the mouse (body, panel).
+        // The panel whose strength stick is under the mouse (body, panel), or the airfoil vertex (sheet, vertex).
         std::optional<std::pair<std::size_t, std::size_t>> panelHit;
+        std::optional<std::pair<std::size_t, std::size_t>> sheetHit;
         const bool showStrengths = scene.plot.showPanelStrengths && !model.field.panelBodies.empty();
-        if (showStrengths && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake && !m_drawingBody) {
+        const bool showSheetStrengths = scene.plot.showPanelStrengths && !model.field.vortexSheets.empty();
+        const double sheetScale = showSheetStrengths ? sheetStrengthScale(model.field) : 0.0;
+        const float sheetPerUnit = sheetScale > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(sheetScale) : 0.0f;
+        if ((showStrengths || showSheetStrengths) && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake && !m_drawingBody) {
             const ImVec2 mouse = ImGui::GetMousePos();
             float best = 0.6f * k_hitRadiusPx * uiScale();
-            const double scale = strengthScale(model.field);
+            const double scale = showStrengths ? strengthScale(model.field) : 0.0;
             const float perUnit = scale > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(scale) : 0.0f;
-            for (std::size_t b = 0; b < model.field.panelBodies.size(); ++b) {
+            for (std::size_t b = 0; b < model.field.panelBodies.size() && showStrengths; ++b) {
                 const SourcePanels& body = model.field.panelBodies[b];
                 for (std::size_t j = 0; j < body.size(); ++j) {
                     const ImVec2 base = toPixels(body.controlPoints[j]);
@@ -806,7 +905,38 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
                     }
                 }
             }
+            for (std::size_t a = 0; a < model.field.vortexSheets.size() && showSheetStrengths; ++a) {
+                const VortexSheet& sheet = model.field.vortexSheets[a];
+                for (std::size_t k = 0; k < sheet.vertices.size(); ++k) {
+                    const ImVec2 base = toPixels(sheet.vertices[k]);
+                    const ImVec2 tip = base + sheetStickDirection(sheet, k) * stickLength(sheet.gamma[k], sheetPerUnit);
+                    const float d = distanceToSegment(mouse, base, tip) + 0.5f; // a body's stick wins a tie
+                    if (d < best) {
+                        best = d;
+                        sheetHit = std::pair{a, k};
+                        panelHit.reset();
+                    }
+                }
+            }
         }
+        const auto sheetText = [&](std::pair<std::size_t, std::size_t> h) {
+            const VortexSheet& sheet = model.field.vortexSheets[h.first];
+            const std::size_t k = h.second;
+            const double gamma = sheet.gamma[k];
+            std::string text = std::format("Vortex-sheet airfoil #{}, vertex {} of {} at x/c = {:.4f}\nγ = {:.5g}  ({})",
+                                           sheet.element + 1, k + 1, sheet.vertices.size(), sheet.chordwise[k], gamma,
+                                           k + 1 == sheet.vertices.size() ? "0 at the trailing edge: the Kutta condition"
+                                           : gamma >= 0.0               ? "clockwise: faster over the top"
+                                                                        : "counter-clockwise: faster underneath");
+            const double speed = model.freeStreamSpeed;
+            if (speed > 0.0) {
+                const ThinAirfoilTheory theory = thinAirfoilTheory(sheet.airfoil, angleOfAttack(sheet.airfoil, model.freeStream));
+                text += std::format("\nγ / V∞ = {:.5g},  ΔCp = 2γ/V∞ = {:.5g}", gamma / speed, 2.0 * gamma / speed);
+                if (k > 0) text += std::format("  (thin-airfoil theory {:.5g})", theory.deltaCp(sheet.chordwise[k]));
+            }
+            if (k == 0) text += "\nThe leading edge: the exact γ is infinite here; the panels keep it finite.";
+            return text;
+        };
         const auto panelText = [&](std::pair<std::size_t, std::size_t> h) {
             const SourcePanels& body = model.field.panelBodies[h.first];
             const std::size_t j = h.second;
@@ -823,6 +953,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
                                 lambda * body.lengths[j]);
             return text;
         };
+        std::string caption;
         if (showStrengths) {
             const double scale = strengthScale(model.field);
             if (scale > 0.0) {
@@ -831,18 +962,34 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
                 for (const SourcePanels& body : model.field.panelBodies) {
                     for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
                 }
-                const float s = uiScale();
-                std::string caption = std::format("Panel source strengths: a full stick is λ = {:.4g}  (green: source λ > 0, red: "
-                                                  "sink λ < 0)", scale);
+                caption = std::format("Panel source strengths: a full stick is λ = {:.4g}  (green: source λ > 0, red: "
+                                      "sink λ < 0)", scale);
                 if (largest > k_strengthClip * scale) {
                     caption += std::format("\nSticks ending in a bar are cut short; the largest is λ = {:.4g}", largest);
                 }
-                const ImVec2 textSize = ImGui::CalcTextSize(caption.c_str());
-                const ImVec2 at = plotPos + ImVec2(10.0f * s, result.pixelSize.y - textSize.y - 12.0f * s);
-                dl->AddRectFilled(at - ImVec2(6.0f * s, 3.0f * s), at + textSize + ImVec2(6.0f * s, 3.0f * s),
-                                  IM_COL32(15, 17, 24, 190), 4.0f * s);
-                dl->AddText(at, k_hintColor, caption.c_str());
             }
+        }
+        if (showSheetStrengths && sheetScale > 0.0) {
+            drawSheetStrengths(dl, model.field, sheetPerUnit, sheetHit);
+            double largest = 0.0;
+            for (const VortexSheet& sheet : model.field.vortexSheets) {
+                for (const double gamma : sheet.gamma) largest = std::max(largest, std::abs(gamma));
+            }
+            if (!caption.empty()) caption += '\n';
+            caption += std::format("Airfoil vortex strengths: a full stick is γ = {:.4g}  (amber, above: clockwise γ > 0; "
+                                   "cyan, below: γ < 0)", sheetScale);
+            if (largest > k_strengthClip * sheetScale) {
+                caption += std::format("\nSticks ending in a bar are cut short; the largest is γ = {:.4g}, at the leading edge",
+                                       largest);
+            }
+        }
+        if (!caption.empty()) {
+            const float s = uiScale();
+            const ImVec2 textSize = ImGui::CalcTextSize(caption.c_str());
+            const ImVec2 at = plotPos + ImVec2(10.0f * s, result.pixelSize.y - textSize.y - 12.0f * s);
+            dl->AddRectFilled(at - ImVec2(6.0f * s, 3.0f * s), at + textSize + ImVec2(6.0f * s, 3.0f * s),
+                              IM_COL32(15, 17, 24, 190), 4.0f * s);
+            dl->AddText(at, k_hintColor, caption.c_str());
         }
 
         if (scene.plot.showImages) {
@@ -978,12 +1125,15 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             if (anchor && !std::holds_alternative<SymmetryWall>(element)) {
                 dl->AddCircle(toPixels(*anchor), 11.0f * uiScale(), k_highlightColor, 0, 1.5f * uiScale());
             }
-            // A sink's stick points into its body, where the body itself is grabbed: show both.
-            const bool onPanel = panelHit && std::holds_alternative<PanelBody>(element);
+            // A sink's stick points into its body, where the body itself is grabbed, and an airfoil's
+            // sticks start on its camber line: show both.
+            std::string extra;
+            if (panelHit && std::holds_alternative<PanelBody>(element)) extra = "\n\n" + panelText(*panelHit);
+            if (sheetHit && std::holds_alternative<ThinAirfoil>(element)) extra = "\n\n" + sheetText(*sheetHit);
             ImGui::SetTooltip("#%zu  %s\n%s\n%s%s", *hit + 1, kindName(kindOf(element)), describe(element).c_str(),
                               draggable ? "Drag to move (Shift snaps to a grid), double-click to edit."
                                         : "Double-click to edit.",
-                              onPanel ? ("\n\n" + panelText(*panelHit)).c_str() : "");
+                              extra.c_str());
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 result.editRequest = hit;
             } else if (draggable && pressed) {
@@ -1015,6 +1165,8 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             }
         } else if (panelHit) {
             ImGui::SetTooltip("%s", panelText(*panelHit).c_str());
+        } else if (sheetHit) {
+            ImGui::SetTooltip("%s", sheetText(*sheetHit).c_str());
         }
         m_grabbableHovered = draggable || rakeHit.has_value() || stagnationHit.has_value();
 

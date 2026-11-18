@@ -4,7 +4,8 @@ An interactive 2D potential-flow simulator in C++20, built as a senior mechanica
 semester project. It superposes elementary flows (uniform flow, source/sink, vortex, doublet,
 sector flow) and straight symmetry walls, solves bodies of any shape with the source panel
 method (ellipses, rectangles, NACA 4-digit airfoils, outlines drawn on the plot or imported from
-airfoil coordinate files), draws evenly spaced streamlines with direction arrows, equipotential
+airfoil coordinate files), models thin airfoils as a vortex sheet on the camber line with the Kutta
+condition (thin-airfoil theory), draws evenly spaced streamlines with direction arrows, equipotential
 lines and velocity-magnitude contours, and animates tracer particles on the GPU.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
@@ -43,10 +44,16 @@ lines and velocity-magnitude contours, and animates tracer particles on the GPU.
   interior masked, a vortex inside gives the body circulation (lifting cylinder). View → Panel
   source strengths draws each panel's λ as a stick on the body, and the Cp panel plots λ against
   the exact source sheet.
-- **Verify** menu (F5): 54 checks run in front of you. Each compares the program with an exact
+- **Vortex-sheet airfoils** (thin-airfoil theory): a flat plate, NACA 4-digit mean line or circular
+  arc as a vortex sheet γ on the camber line, cut into N linear-strength vortex panels with the Kutta
+  condition γ(TE) = 0, solved together with the source-panel bodies. The Cp panel plots ΔCp = 2γ/V∞
+  along the chord over the thin-airfoil curve, with A₀–A₃, c_l (Kutta–Joukowski and from ΔCp),
+  c_m,c/4 and α_L0 beside the theory; sweep α for a c_l–α line in the sweep CSV.
+- **Verify** menu (F5): 61 checks run in front of you. Each compares the program with an exact
   result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine bodies,
   dividing streamlines, wall and channel images, surface Cp, d'Alembert, Kutta–Joukowski and
-  Blasius, the source panel method (exact on a cylinder, converging on an ellipse), the
+  Blasius, the source panel method (exact on a cylinder, converging on an ellipse), thin airfoils (a flat
+  plate's 2π sin α, the NACA 2412 mean line, a circular arc against its conformal map), the
   streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
   Each check shows its error against its tolerance and the program's numbers beside theory, and can
   load its flow into the plot.

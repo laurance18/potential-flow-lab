@@ -33,11 +33,12 @@
 //
 // Without circulation a body has no lift; a vortex placed inside one gives it circulation
 // (around a circle that is the lifting cylinder) but nothing fixes how much: that needs vortex
-// panels and the Kutta condition.
+// panels and the Kutta condition (the thin airfoils of vortex_sheet.hpp, solved in the same system).
 #pragma once
 
 #include "core/flow_element.hpp"
 #include "core/vec2.hpp"
+#include "core/vortex_sheet.hpp"
 
 #include <optional>
 #include <span>
@@ -139,6 +140,17 @@ struct SourcePanels {
 // the order of `bodies`, each tagged with its scene index from `elements`.
 std::vector<SourcePanels> solveSourcePanels(std::span<const PanelBody> bodies, std::span<const std::size_t> elements,
                                             const FlowField& external);
+
+// Source-panel bodies and vortex-sheet airfoils (vortex_sheet.hpp) solved together, in one dense
+// system: no flow through any control point of any of them, in the flow of `external` and of each
+// other. Each is tagged with its scene index from `bodyElements` / `airfoilElements`.
+struct PanelSolution {
+    std::vector<SourcePanels> bodies;
+    std::vector<VortexSheet> sheets;
+};
+PanelSolution solvePanelMethods(std::span<const PanelBody> bodies, std::span<const std::size_t> bodyElements,
+                                std::span<const ThinAirfoil> airfoils, std::span<const std::size_t> airfoilElements,
+                                const FlowField& external);
 
 // Largest |v . n| at the control points over the largest |v| there, from `field` (which holds the
 // bodies): 0 up to rounding for a solved body.

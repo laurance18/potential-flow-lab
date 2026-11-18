@@ -1,0 +1,10 @@
+{
+  "format": "pfl-scene",
+  "version": 1,
+  "elements": [
+    {"type": "uniform", "speed": 1, "alpha_deg": 0},
+    {"type": "vortex_sheet", "camber": "naca", "x": -0.2, "y": 0.75, "chord": 2.4, "angle_deg": -5, "panels": 60, "naca_camber": 2, "naca_position": 4},
+    {"type": "source_panels", "shape": "ellipse", "x": 0.3, "y": -0.55, "a": 1.6, "b": 0.4, "angle_deg": 0, "panels": 80}
+  ],
+  "plot": {"x_min": -4, "x_max": 4, "y_min": -2.5, "y_max": 2.5, "streamline_density": 26, "arrows": true, "arrow_spacing_px": 110, "show_images": true, "particles": true, "particle_trails": true, "surface_pressure": true, "stagnation_points": true, "panel_strengths": false}
+}

@@ -46,9 +46,10 @@ Vec2 polygonCentroid(const std::vector<Vec2>& v) {
     return twice != 0.0 ? origin + sum / (3.0 * twice) : origin;
 }
 
-// Solves the dense system a x = b (row-major n x n) by Gaussian elimination with partial pivoting.
-std::vector<double> solveDense(std::vector<double> a, std::vector<double> b) {
-    const std::size_t n = b.size();
+// Solves the dense system a x = b (row-major n x n) for `m` right-hand sides at once (b row-major
+// n x m) by Gaussian elimination with partial pivoting. Returns x, n x m.
+std::vector<double> solveDense(std::vector<double> a, std::vector<double> b, std::size_t m) {
+    const std::size_t n = m > 0 ? b.size() / m : 0;
     for (std::size_t col = 0; col < n; ++col) {
         std::size_t pivot = col;
         for (std::size_t row = col + 1; row < n; ++row) {
@@ -56,7 +57,7 @@ std::vector<double> solveDense(std::vector<double> a, std::vector<double> b) {
         }
         if (pivot != col) {
             for (std::size_t k = 0; k < n; ++k) std::swap(a[col * n + k], a[pivot * n + k]);
-            std::swap(b[col], b[pivot]);
+            for (std::size_t r = 0; r < m; ++r) std::swap(b[col * m + r], b[pivot * m + r]);
         }
         const double diagonal = a[col * n + col];
         if (diagonal == 0.0) continue; // singular (overlapping bodies): leave that unknown at 0
@@ -64,15 +65,17 @@ std::vector<double> solveDense(std::vector<double> a, std::vector<double> b) {
             const double f = a[row * n + col] / diagonal;
             if (f == 0.0) continue;
             for (std::size_t k = col; k < n; ++k) a[row * n + k] -= f * a[col * n + k];
-            b[row] -= f * b[col];
+            for (std::size_t r = 0; r < m; ++r) b[row * m + r] -= f * b[col * m + r];
         }
     }
-    std::vector<double> x(n, 0.0);
+    std::vector<double> x(n * m, 0.0);
     for (std::size_t i = n; i-- > 0;) {
-        double sum = b[i];
-        for (std::size_t k = i + 1; k < n; ++k) sum -= a[i * n + k] * x[k];
         const double diagonal = a[i * n + i];
-        x[i] = diagonal != 0.0 ? sum / diagonal : 0.0;
+        for (std::size_t r = 0; r < m; ++r) {
+            double sum = b[i * m + r];
+            for (std::size_t k = i + 1; k < n; ++k) sum -= a[i * n + k] * x[k * m + r];
+            x[i * m + r] = diagonal != 0.0 ? sum / diagonal : 0.0;
+        }
     }
     return x;
 }
@@ -343,11 +346,20 @@ double SourcePanels::perimeter() const {
 
 std::vector<SourcePanels> solveSourcePanels(std::span<const PanelBody> bodies, std::span<const std::size_t> elements,
                                             const FlowField& external) {
-    std::vector<SourcePanels> solved(bodies.size());
+    return solvePanelMethods(bodies, elements, {}, {}, external).bodies;
+}
+
+PanelSolution solvePanelMethods(std::span<const PanelBody> bodies, std::span<const std::size_t> bodyElements,
+                                std::span<const ThinAirfoil> airfoils, std::span<const std::size_t> airfoilElements,
+                                const FlowField& external) {
+    PanelSolution solution;
+    std::vector<SourcePanels>& solved = solution.bodies;
+    std::vector<VortexSheet>& sheets = solution.sheets;
+    solved.resize(bodies.size());
     std::size_t total = 0;
     for (std::size_t b = 0; b < bodies.size(); ++b) {
         SourcePanels& s = solved[b];
-        s.element = b < elements.size() ? elements[b] : b;
+        s.element = b < bodyElements.size() ? bodyElements[b] : b;
         s.body = bodies[b];
         s.vertices = panelVertices(bodies[b]);
         const std::size_t n = s.size();
@@ -360,41 +372,97 @@ std::vector<SourcePanels> solveSourcePanels(std::span<const PanelBody> bodies, s
         }
         total += n;
     }
+    // Unknowns of an airfoil: gamma at its vertices 0 .. N-1; gamma_N = 0 (Kutta).
+    for (std::size_t a = 0; a < airfoils.size(); ++a) {
+        sheets.push_back(sheetGeometry(airfoils[a], a < airfoilElements.size() ? airfoilElements[a] : a));
+        total += sheets.back().size();
+    }
 
-    // Row i: normal velocity at control point i; column j: panel j with unit strength.
-    std::vector<double> matrix(total * total, 0.0);
-    std::vector<double> rhs(total, 0.0);
-    std::size_t row = 0;
-    for (const SourcePanels& target : solved) {
-        for (std::size_t i = 0; i < target.size(); ++i, ++row) {
-            const Vec2 point = target.controlPoints[i];
-            const Complex normal = toComplex(target.normals[i]);
-            // v . n = Re(conj(W) conj(n)) = Re(W n).
-            rhs[row] = -(external.complexVelocity(point) * normal).real();
-            std::size_t column = 0;
-            for (const SourcePanels& source : solved) {
-                const std::size_t n = source.size();
-                for (std::size_t j = 0; j < n; ++j, ++column) {
-                    if (&source == &target && j == i) {
-                        matrix[row * total + column] = 0.5; // the panel's own sheet, just outside it
-                    } else {
-                        const Complex w = unitPanelVelocity(source.vertices[j], source.vertices[(j + 1) % n], point);
-                        matrix[row * total + column] = (w * normal).real();
-                    }
-                }
-            }
+    // Rows: the normal velocity at every control point, the bodies' first. Columns: a body panel with
+    // unit source strength, or an airfoil vertex with unit gamma. Three right-hand sides: the flow
+    // outside the panels, and unit streams along +x and +y (for the airfoils' alpha_L0 and lift slope).
+    struct Row {
+        Vec2 point;
+        Complex normal;
+        const SourcePanels* body;  // the body or sheet the control point is on, and its panel
+        const VortexSheet* sheet;
+        std::size_t panel;
+    };
+    std::vector<Row> rows;
+    rows.reserve(total);
+    for (const SourcePanels& body : solved) {
+        for (std::size_t i = 0; i < body.size(); ++i) rows.push_back({body.controlPoints[i], toComplex(body.normals[i]), &body, nullptr, i});
+    }
+    for (const VortexSheet& sheet : sheets) {
+        for (std::size_t i = 0; i < sheet.size(); ++i) {
+            rows.push_back({sheet.controlPoints[i], toComplex(sheet.normals[i]), nullptr, &sheet, i});
         }
     }
 
-    const std::vector<double> strengths = solveDense(std::move(matrix), std::move(rhs));
+    constexpr std::size_t sides = 3;
+    std::vector<double> matrix(total * total, 0.0);
+    std::vector<double> rhs(total * sides, 0.0);
+    for (std::size_t row = 0; row < rows.size(); ++row) {
+        const Row& r = rows[row];
+        double* line = &matrix[row * total];
+        // v . n = Re(conj(W) conj(n)) = Re(W n). A stream along +x has W = 1, along +y W = -i.
+        rhs[row * sides + 0] = -(external.complexVelocity(r.point) * r.normal).real();
+        rhs[row * sides + 1] = -r.normal.real();
+        rhs[row * sides + 2] = -r.normal.imag();
+        std::size_t column = 0;
+        for (const SourcePanels& source : solved) {
+            const std::size_t n = source.size();
+            for (std::size_t j = 0; j < n; ++j, ++column) {
+                if (&source == r.body && j == r.panel) {
+                    line[column] = 0.5; // the panel's own sheet, just outside it
+                } else {
+                    const Complex w = unitPanelVelocity(source.vertices[j], source.vertices[(j + 1) % n], r.point);
+                    line[column] = (w * r.normal).real();
+                }
+            }
+        }
+        for (const VortexSheet& sheet : sheets) {
+            const std::size_t n = sheet.size();
+            // On its own panel (r.sheet, r.panel) the influence is the principal value, which
+            // unitVortexPanelVelocity() takes there.
+            for (std::size_t j = 0; j < n; ++j) {
+                const PanelInfluence w = unitVortexPanelVelocity(sheet.vertices[j], sheet.vertices[j + 1], r.point);
+                line[column + j] += (w.first * r.normal).real();
+                if (j + 1 < n) line[column + j + 1] += (w.second * r.normal).real();
+            }
+            column += n;
+        }
+    }
+
+    const std::vector<double> x = solveDense(std::move(matrix), std::move(rhs), sides);
+    const auto unknown = [&x](std::size_t k, std::size_t side) { return x[k * sides + side]; };
     std::size_t offset = 0;
     for (SourcePanels& s : solved) {
-        s.strengths.assign(strengths.begin() + static_cast<std::ptrdiff_t>(offset),
-                           strengths.begin() + static_cast<std::ptrdiff_t>(offset + s.size()));
+        s.strengths.resize(s.size());
+        for (std::size_t j = 0; j < s.size(); ++j) s.strengths[j] = unknown(offset + j, 0);
         offset += s.size();
         finishBody(s);
     }
-    return solved;
+    // alpha_L0 and the lift slope of an airfoil follow from the unit streams only when the rest of
+    // the flow is uniform too.
+    const bool uniformOnly = external.rows.empty() && std::ranges::all_of(external.elements, [](const FlowElement& e) {
+                                 return std::holds_alternative<UniformFlow>(e);
+                             });
+    for (VortexSheet& sheet : sheets) {
+        const std::size_t n = sheet.size();
+        std::vector<double> gamma(n + 1, 0.0);
+        Vec2 unit;
+        for (std::size_t k = 0; k < n; ++k) {
+            gamma[k] = unknown(offset + k, 0);
+            // The circulation of the unit-stream solutions, with the trapezoidal sum of linear gamma.
+            const double weight = 0.5 * (sheet.lengths[k] + (k > 0 ? sheet.lengths[k - 1] : 0.0));
+            unit += Vec2{unknown(offset + k, 1), unknown(offset + k, 2)} * weight;
+        }
+        offset += n;
+        setSheetStrengths(sheet, std::move(gamma));
+        if (uniformOnly) sheet.unitCirculation = unit;
+    }
+    return solution;
 }
 
 double normalFlowResidual(const SourcePanels& body, const FlowField& field) {

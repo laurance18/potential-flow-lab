@@ -126,6 +126,26 @@ void drawToolIcon(ImDrawList* dl, ImVec2 c, float size, ElementKind kind) {
         }
         break;
     }
+    case ElementKind::ThinAirfoil: {
+        // A cambered line with its vortex strength: tall sticks at the leading edge, none at the
+        // trailing edge (Kutta), and the line through their tips.
+        constexpr int points = 9;
+        std::array<ImVec2, points> line;
+        std::array<ImVec2, points> tips;
+        for (int k = 0; k < points; ++k) {
+            const float x = 0.5f * (1.0f - std::cos(k_pi * k / (points - 1))); // cosine spacing, 0 .. 1
+            const ImVec2 p = c + ImVec2((x - 0.5f) * 1.6f * h, (0.35f - 0.9f * x * (1.0f - x)) * h);
+            line[static_cast<std::size_t>(k)] = p;
+            const float strength = k == 0 ? 0.95f : std::min(0.95f, 0.32f * std::sqrt((1.0f - x) / x));
+            tips[static_cast<std::size_t>(k)] = p - ImVec2(0.0f, strength * h);
+        }
+        for (int k = 0; k < points; ++k) {
+            dl->AddLine(line[static_cast<std::size_t>(k)], tips[static_cast<std::size_t>(k)], fadeColor(k_vortexColor, 0.85f), 1.3f * s);
+        }
+        dl->AddPolyline(tips.data(), points, IM_COL32(235, 235, 235, 170), ImDrawFlags_None, 1.0f * s);
+        dl->AddPolyline(line.data(), points, k_sheetColor, ImDrawFlags_None, 2.2f * s);
+        break;
+    }
     }
 }
 

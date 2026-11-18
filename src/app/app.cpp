@@ -283,6 +283,7 @@ private:
     StreamlineSet m_equipotentials;
     ContourMap m_contours;
     std::vector<BodySurface> m_surfaces;
+    std::vector<AirfoilLoading> m_airfoils; // the thin airfoils' loading, with the surfaces
     double m_lowestCp = -3.0; // bottom of the Cp colour scale
     std::vector<Vec2> m_stagnationPoints;
     // Stagnation points clicked to show their dividing streamlines: not saved with the scene.
@@ -610,7 +611,8 @@ void App::frame(double dt) {
     m_surfaceMarker.reset();
     if (surfacePanel) {
         m_surfaceMarker = m_surfacePanel.draw(ImVec2(panelPos.x, panelPos.y + parametersHeight),
-                                              ImVec2(panelWidth, bodyHeight - parametersHeight), m_surfaces, m_model);
+                                              ImVec2(panelWidth, bodyHeight - parametersHeight), m_surfaces, m_airfoils,
+                                              m_model);
     }
     m_scene.plot.view = m_plot.limits; // panning and zooming are saved with the scene, but are not "edits"
     if (m_plot.editRequest) m_dialog.openEdit(*m_plot.editRequest, m_scene.elements[*m_plot.editRequest]);
@@ -961,6 +963,7 @@ void App::updateStreamlines() {
     m_equipotentials = {};
     m_contours = {};
     m_surfaces.clear();
+    m_airfoils.clear();
     m_stagnationPoints.clear();
     if (!m_model.field.empty()) {
         const double worldPerPixel = view.size().x / m_plot.pixelSize.x;
@@ -1000,7 +1003,12 @@ void App::updateStreamlines() {
                 m_contours.bands = pressure.bands;
             }
         }
-        if (m_scene.plot.showSurfacePressure) m_surfaces = findBodySurfaces(m_model, view);
+        if (m_scene.plot.showSurfacePressure) {
+            m_surfaces = findBodySurfaces(m_model, view);
+            for (std::size_t i = 0; i < m_model.field.vortexSheets.size(); ++i) {
+                if (auto loading = airfoilLoading(m_model.field, i, m_model.freeStream)) m_airfoils.push_back(std::move(*loading));
+            }
+        }
         if (m_scene.plot.showStagnationPoints && m_referenceSpeed > 0.0) {
             m_stagnationPoints = findStagnationPoints(m_model.field, view, m_referenceSpeed);
         }
@@ -1424,6 +1432,14 @@ StatusInfo App::statusInfo() const {
                                     .relativeNormalSpeed = normalFlowResidual(body, field),
                                     .relativeNetSource = std::abs(body.netSource) / scale});
     }
+    for (const VortexSheet& sheet : field.vortexSheets) {
+        info.panelBodies.push_back({.number = sheet.element + 1,
+                                    .panels = static_cast<int>(sheet.size()),
+                                    .relativeNormalSpeed = sheetNormalFlowResidual(sheet, field),
+                                    .airfoil = true,
+                                    .circulation = sheet.circulation});
+    }
+    std::ranges::sort(info.panelBodies, {}, &PanelStatus::number);
     return info;
 }
 

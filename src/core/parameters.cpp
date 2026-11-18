@@ -87,6 +87,33 @@ constexpr std::array k_panelBody = {
     panelCount(),
 };
 
+// The angle of attack in a stream along +x, alpha = -theta: the same rotation, read the other way,
+// so a sweep of it gives a c_l-alpha curve.
+constexpr ElementParameter angleOfAttackParameter() {
+    return {"α", "Angle of attack in a stream along +x: α = −θ (the rotation, the other way round)", ParameterKind::Angle,
+            [](const SceneElement& e) { return -std::get<ThinAirfoil>(e).angle; },
+            [](SceneElement& e, double v) { std::get<ThinAirfoil>(e).angle = -v; }};
+}
+
+constexpr ElementParameter sheetPanelCount() {
+    return {"N", "Number of vortex panels along the camber line", ParameterKind::Count,
+            [](const SceneElement& e) { return static_cast<double>(std::get<ThinAirfoil>(e).panels); },
+            [](SceneElement& e, double v) {
+                const double limited = std::isfinite(v) ? std::clamp(v, -1e6, 1e6) : 0.0; // 0: invalid
+                std::get<ThinAirfoil>(e).panels = static_cast<int>(std::lround(limited));
+            }};
+}
+
+constexpr std::array k_thinAirfoil = {
+    field<ThinAirfoil, &ThinAirfoil::chord>("c", "Chord, from the leading to the trailing edge", ParameterKind::Length),
+    xOf<ThinAirfoil, &ThinAirfoil::position>("x coordinate of the middle of the chord"),
+    yOf<ThinAirfoil, &ThinAirfoil::position>("y coordinate of the middle of the chord"),
+    field<ThinAirfoil, &ThinAirfoil::angle>("θ", "Turns the airfoil counter-clockwise about the middle of its chord",
+                                            ParameterKind::Angle),
+    angleOfAttackParameter(),
+    sheetPanelCount(),
+};
+
 } // namespace
 
 std::span<const ElementParameter> elementParameters(ElementKind kind) {
@@ -98,6 +125,7 @@ std::span<const ElementParameter> elementParameters(ElementKind kind) {
     case ElementKind::Sector: return k_sector;
     case ElementKind::Wall: return k_wall;
     case ElementKind::PanelBody: return k_panelBody;
+    case ElementKind::ThinAirfoil: return k_thinAirfoil;
     }
     return {};
 }
