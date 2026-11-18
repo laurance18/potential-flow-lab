@@ -129,6 +129,27 @@ void drawToolIcon(ImDrawList* dl, ImVec2 c, float size, ElementKind kind) {
     }
 }
 
+void drawOutlineToolIcon(ImDrawList* dl, ImVec2 c, float size) {
+    const float s = uiScale();
+    const float h = 0.5f * size;
+    // A lopsided blob, open where the pencil is still drawing it.
+    constexpr int samples = 28;
+    for (int k = 0; k <= samples - 4; ++k) {
+        const float t = 2.0f * k_pi * k / samples + 0.9f;
+        const float r = 0.55f * h * (1.0f + 0.22f * std::sin(2.0f * t) + 0.12f * std::cos(3.0f * t));
+        dl->PathLineTo(c + ImVec2(-0.12f * h, 0.05f * h) + polar(r, t));
+    }
+    dl->PathStroke(k_panelColor, ImDrawFlags_None, 1.8f * s);
+    const ImVec2 tip = c + ImVec2(-0.12f * h, 0.05f * h) + polar(0.55f * h * (1.0f + 0.22f * std::sin(1.8f) + 0.12f * std::cos(2.7f)), 0.9f);
+    const ImVec2 dir = polar(1.0f, -0.85f);   // up and to the right, along the pencil
+    const ImVec2 side{-dir.y, dir.x};
+    const ImVec2 back = tip + dir * (0.85f * h);
+    const ImU32 wood = IM_COL32(245, 185, 65, 255);
+    dl->AddTriangleFilled(tip, tip + dir * (0.25f * h) + side * (0.1f * h), tip + dir * (0.25f * h) - side * (0.1f * h), IM_COL32(235, 235, 235, 255));
+    dl->AddQuadFilled(tip + dir * (0.25f * h) + side * (0.1f * h), back + side * (0.1f * h), back - side * (0.1f * h),
+                      tip + dir * (0.25f * h) - side * (0.1f * h), wood);
+}
+
 void drawDyeRakeIcon(ImDrawList* dl, ImVec2 c, float size) {
     const float s = uiScale();
     const float h = 0.5f * size;

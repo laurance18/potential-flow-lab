@@ -10,6 +10,7 @@
 #include "core/streamline.hpp"
 #include "core/surface_pressure.hpp"
 #include "core/sweep.hpp"
+#include "io/airfoil_io.hpp"
 #include "io/data_export.hpp"
 #include "io/examples.hpp"
 #include "io/scene_io.hpp"
@@ -122,6 +123,23 @@ Vec2 newElementPosition(const Rect& view) {
     return {std::round(c.x / step) * step + 0.0, std::round(c.y / step) * step + 0.0};
 }
 
+// A source-panel body with an outline drawn on the plot, where it was drawn: centred on its bounding
+// box, which a and b span, so the outline is not stretched.
+PanelBody drawnBody(std::vector<Vec2> outline) {
+    Vec2 lo = outline.front();
+    Vec2 hi = outline.front();
+    for (const Vec2 p : outline) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    PanelBody body{.shape = PanelShape::Custom, .position = (lo + hi) * 0.5, .semiAxisA = 0.5 * (hi.x - lo.x),
+                   .semiAxisB = 0.5 * (hi.y - lo.y), .panels = 80};
+    body.outline = std::move(outline);
+    body.smooth = true;
+    body.name = "drawn";
+    return body;
+}
+
 // The Cp colour scale: from 1 (stagnation) down to the Cp of twice the typical speed in the view,
 // rounded down to a band edge, so that it matches the |V| scale. At least -1, at most 24 bands.
 struct PressureScale {
@@ -165,6 +183,7 @@ private:
     void openScene();
     void openExample(const ExampleScene& example);
     void saveScene(bool askForPath);
+    void importAirfoil();
     // `name`: the title of an untitled scene that is neither an example nor a file (a verification flow).
     void setScene(Scene scene, std::filesystem::path path, const ExampleScene* example = nullptr, std::string name = {});
     // `live`: one step of a drag; the particles keep flowing instead of starting over.
@@ -550,9 +569,11 @@ void App::frame(double dt) {
     const float toolWidth = toolbarWidth();
     const float bodyHeight = std::max(workSize.y - statusHeight, 1.0f);
 
-    const ToolbarAction tool = drawToolbar(workPos, ImVec2(toolWidth, bodyHeight), m_plotView.placingRake());
+    const ToolbarAction tool =
+        drawToolbar(workPos, ImVec2(toolWidth, bodyHeight), m_plotView.placingRake(), m_plotView.drawingBody());
     if (tool.element) m_dialog.openNew(defaultElement(*tool.element, newElementPosition(m_scene.plot.view)));
     if (tool.placeRake) m_plotView.toggleRakePlacement();
+    if (tool.drawBody) m_plotView.toggleBodyDrawing();
 
     PlotLayers layers{.streamlines = m_streamlines,
                       .equipotentials = m_equipotentials,
@@ -598,6 +619,7 @@ void App::frame(double dt) {
         element = movedTo(std::move(element), m_plot.move->position);
         sceneEdited(true);
     }
+    if (m_plot.drawnOutline) m_dialog.openNew(drawnBody(std::move(*m_plot.drawnOutline)));
     if (m_plot.rakeChange) applyRakeChange(*m_plot.rakeChange);
     if (m_plot.rakeRemove) removeRake(*m_plot.rakeRemove);
     if (m_plot.dividingAdd) {
@@ -671,6 +693,7 @@ void App::handleMenu(const MainMenuActions& actions) {
         request(DiscardingAction::Example);
     }
     if (actions.save || actions.saveAs) saveScene(actions.saveAs);
+    if (actions.importAirfoil) importAirfoil();
     if (actions.undo) undo();
     if (actions.redo) redo();
     if (actions.exportImage) exportImage();
@@ -780,6 +803,19 @@ void App::saveScene(bool askForPath) {
     m_sceneName.clear();
     m_dirty = false;
     updateTitle();
+}
+
+// A new source-panel body from an airfoil file, placed at the view centre and opened in the dialog.
+void App::importAirfoil() {
+    const std::optional<std::filesystem::path> path = showOpenAirfoilDialog(m_window);
+    if (!path) return;
+    AirfoilLoadResult result = loadAirfoilFile(*path);
+    if (!result.body) {
+        showErrorMessage(m_window, "Could not import the airfoil", result.error);
+        return;
+    }
+    result.body->position = newElementPosition(m_scene.plot.view);
+    m_dialog.openNew(std::move(*result.body));
 }
 
 void App::setScene(Scene scene, std::filesystem::path path, const ExampleScene* example, std::string name) {

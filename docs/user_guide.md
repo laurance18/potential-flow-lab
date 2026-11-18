@@ -15,7 +15,7 @@ The window has four parts:
 
 | Part | What it does |
 |---|---|
-| Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below them, the dye rake tool. |
+| Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below the source-panel body, the pencil that draws one. At the bottom, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
 | Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View**, **Verify** and **Help** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
@@ -241,11 +241,11 @@ written down in closed form).
 
 | Parameter | Meaning |
 |---|---|
-| Shape | **Ellipse** (a circle when a = b) or **Rectangle** |
-| a, b | Semi-axes of the ellipse, or the half-width and half-height of the rectangle |
+| Shape | **Ellipse** (a circle when a = b), **Rectangle**, **NACA 4-digit airfoil** or an **outline** you drew or imported (see below) |
+| a, b | Half the size along and across the body's own x axis: the semi-axes of the ellipse, the half-width and half-height of the rectangle or the outline, half the chord and half the thickness of the airfoil |
 | x₀, y₀ | Centre of the body (drag it there, or grab it anywhere inside it) |
 | θ | Turns the body counter-clockwise about its centre |
-| N | Number of panels, 4 to 400 (a rectangle needs an even number) |
+| N | Number of panels, 4 to 400 (a rectangle or an airfoil needs an even number) |
 
 How it works:
 
@@ -299,6 +299,50 @@ The status bar shows the boundary condition as it is solved: the largest |v · n
 points over the speed there (about 10⁻¹⁵), and in its tooltip Σλs, the net source strength of each
 body, which is zero for the exact solution of a closed body (and zero by symmetry for an ellipse or
 rectangle alone in a stream).
+
+### Shapes of your own: drawing, airfoils and imported coordinates
+
+Besides the ellipse and the rectangle, a source-panel body can be:
+
+- **A NACA 4-digit airfoil.** Choose *NACA 4-digit airfoil* as the shape and give the camber m
+  (% of the chord), its position p (tenths of the chord), the chord c and the thickness t/c; the
+  dialog shows the designation (NACA 2412, ...). The airfoil lies along the body's x axis, leading
+  edge in front; with a stream along +x its angle of attack is α = −θ. The N panels (an even number)
+  are cosine-spaced along the chord, short at both edges.
+- **A drawn outline.** Pick the **pencil tool** (just below the source-panel body icon) and click
+  points around the shape you want, or hold the button and drag to sketch it. Click the first
+  point again (or press Enter, or double-click) to close it; Backspace takes back the last point
+  and Esc gives up. The dialog then opens with the new body where you drew it.
+- **Imported airfoil coordinates.** **File → Import airfoil coordinates (.dat)...** reads an x y
+  coordinate file in the Selig or Lednicer layout, the two used by the UIUC airfoil database. The
+  airfoil gets a chord of 2 and its own thickness, 120 panels, and the name from the file.
+
+For a drawn or imported outline the points only give the shape; the N panels are laid along it
+independently of them:
+
+- **Smooth outline** (the default): a smooth curve (a cubic spline) through the points, except at
+  sharp corners, turning by more than 100° (a trailing edge), which stay sharp. A dozen points
+  already give a smooth blob; points on an ellipse are joined into the ellipse to within 3·10⁻⁴
+  with 24 points and 2·10⁻⁵ with 48.
+- **Straight outline** (untick *Smooth outline*): straight lines from point to point, with a corner,
+  and so a panel vertex, at every point where the outline turns. That needs at least as many panels
+  as corners.
+- Every corner is a panel vertex. Between corners the panels are shared out by length, a little
+  shorter where the outline curves, and cosine-spaced towards corners sharper than 30°.
+- a and b are the half-width and half-height of the outline: it is stretched to fit 2a × 2b.
+  *Keep the outline's proportions* sets b back so that it is not distorted.
+- An outline must not cross itself (the dialog says so if it does). Concave shapes are fine: a body
+  that no point inside it sees whole (a crescent, a C) sums its panels one by one instead of the
+  faster way, with the same result. Its φ and ψ exports then jump across lines running in −x from
+  the vertices; the velocity does not.
+
+What to expect from these shapes: Cp converges at first order on them (the error halves when N
+doubles), as constant-strength panels do on a general spacing. The ellipse preset's equal steps
+are a special case, with second order. An airfoil at incidence shows the limit of source panels
+most clearly. Without circulation it has no lift, and the flow has to turn round the sharp trailing
+edge, where its exact speed is infinite: the panels there need huge strengths (the sticks of
+**Panel source strengths** are cut short), and the force from Cp comes to d'Alembert's zero only
+slowly. Putting the Kutta condition on that trailing edge is what a vortex sheet does.
 
 Limits: panel bodies have no images in symmetry walls (the walls are then not streamlines near the
 body, and a warning says so), and overlapping bodies have no meaningful solution (also warned).
@@ -359,7 +403,7 @@ PotentialFlowLab.exe examples\lifting_cylinder.json --export-video lifting_cylin
 ## Verifying the physics
 
 **Verify → Physics checks...** (F5) tests the program against potential-flow theory, in front of
-you. Each of the 51 checks runs the program's own code and compares the result with the exact one,
+you. Each of the 54 checks runs the program's own code and compares the result with the exact one,
 written out separately, mostly in polar form, without using the program's equations. The checks are
 in nine groups:
 
@@ -372,7 +416,7 @@ in nine groups:
 | Pressure and forces | Cp on the cylinder and the Rankine bodies, d'Alembert's paradox, Kutta–Joukowski lift, forces from the far field (Blasius), and forces along a parameter sweep |
 | Streamlines and equipotentials | Straight lines in a uniform flow, rays from a source or sink, circles around a vortex in the right direction, ψ constant along streamlines, even spacing, arrows along the flow, and equipotentials at 90° to the streamlines |
 | Particles and dye | Tracer particles against the exact orbit around a vortex and against ψ past a cylinder; dye against ψ and the spacing V∞Δt |
-| Panel methods | Source panels on a cylinder (exact at the control points, and Anderson's 8-panel strengths), on an ellipse (second-order convergence of Cp), the panel strengths against the exact source sheet (first order), the panel sums near and far, the field around an ellipse against its conformal map, a lifting cylinder from a vortex inside panels, and no flow through the panels |
+| Panel methods | Source panels on a cylinder (exact at the control points, and Anderson's 8-panel strengths), on an ellipse (second-order convergence of Cp), the panel strengths against the exact source sheet (first order), the panel sums near and far, the field around an ellipse against its conformal map, a lifting cylinder from a vortex inside panels, no flow through the panels, drawn outlines (the spline through points on an ellipse, and its flow), NACA 4-digit geometry and Σλs, and a concave body against the panels summed directly |
 | Saving and reopening | A scene with every kind of element saved to a file and reopened: every parameter, the rakes, the plot settings and the streamlines come back |
 
 The checks run one after another, and each turns into a green tick when it passes (red cross if

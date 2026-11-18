@@ -607,8 +607,12 @@ SceneElement mirroredElement(SceneElement element) {
                 e.strength = -e.strength;
                 e.wall1 = -std::exchange(e.wall2, -e.wall1);
             } else if constexpr (std::is_same_v<T, PanelBody>) {
-                e.position = mirroredInX(e.position); // both shapes are symmetric about their own axes
+                // An ellipse and a rectangle are symmetric about their own axes; an airfoil turns over,
+                // and an outline is mirrored in its own frame.
+                e.position = mirroredInX(e.position);
                 e.angle = -e.angle;
+                if (e.shape == PanelShape::Naca) e.nacaCamber = -e.nacaCamber;
+                for (Vec2& p : e.outline) p.y = -p.y;
             } else {
                 e.point = mirroredInX(e.point);
                 e.angle = -e.angle;
@@ -2330,6 +2334,195 @@ VerificationResult panelBoundary() {
     return finish(std::move(r));
 }
 
+// An outline body that fits the bounding box of its points (as a drawn one does).
+PanelBody outlineOf(std::vector<Vec2> points, bool smooth, int panels, double angle = 0.0) {
+    Vec2 lo = points.front();
+    Vec2 hi = points.front();
+    for (const Vec2 p : points) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    PanelBody body{.shape = PanelShape::Custom, .position = (lo + hi) * 0.5, .semiAxisA = 0.5 * (hi.x - lo.x),
+                   .semiAxisB = 0.5 * (hi.y - lo.y), .angle = angle, .panels = panels};
+    body.outline = std::move(points);
+    body.smooth = smooth;
+    body.name = "points on an ellipse";
+    return body;
+}
+
+std::vector<Vec2> pointsOnEllipse(int count, double a, double b) {
+    std::vector<Vec2> points;
+    for (int k = 0; k < count; ++k) points.push_back({a * std::cos(2.0 * pi * k / count), b * std::sin(2.0 * pi * k / count)});
+    return points;
+}
+
+// A crescent with sharp horns, which no point inside it sees whole.
+std::vector<Vec2> crescentPoints() {
+    std::vector<Vec2> points;
+    for (int k = 0; k <= 40; ++k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({std::cos(t), std::sin(t)});
+    }
+    for (int k = 40; k >= 0; --k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({0.5 * std::cos(t) - 0.3, 0.5 * std::sin(t)});
+    }
+    return points;
+}
+
+Scene drawnEllipseScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg},
+                                  outlineOf(pointsOnEllipse(200, 1.6, 0.8), true, 100, 25.0 * deg)}},
+                    showSurface);
+}
+Scene nacaScene() {
+    PanelBody airfoil{.shape = PanelShape::Naca, .semiAxisA = 1.5, .semiAxisB = 0.18, .angle = -5.0 * deg, .panels = 100};
+    airfoil.nacaCamber = 2;
+    airfoil.nacaPosition = 4;
+    return withPlot({.elements = {UniformFlow{}, airfoil}}, [](PlotSettings& p) {
+        p.showSurfacePressure = true;
+        p.showPanelStrengths = true;
+    });
+}
+Scene crescentScene() {
+    PanelBody body = outlineOf(crescentPoints(), false, 120);
+    body.name = "crescent";
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 10.0 * deg}, body}},
+                    [](PlotSettings& p) { p.showPanelStrengths = true; });
+}
+
+VerificationResult panelOutline() {
+    VerificationResult r;
+    // The smooth outline through the points: how far it strays from the ellipse they lie on.
+    for (const int count : {24, 48, 96}) {
+        const PanelBody body = outlineOf(pointsOnEllipse(count, 1.6, 0.8), true, 200);
+        double worst = 0.0;
+        for (const Vec2 p : panelVertices(body)) {
+            const Vec2 q = p - body.position;
+            worst = std::max(worst, std::abs(std::hypot(q.x / 1.6, q.y / 0.8) - 1.0));
+        }
+        r.comparisons.push_back({std::format("{} points: max |r/r_ellipse − 1| of the panel vertices", count), num(worst), "0"});
+    }
+    // The flow past it, with N panels laid along it.
+    const Scene base = drawnEllipseScene();
+    const PanelBody& body = std::get<PanelBody>(base.elements[1]);
+    const EllipseFrame e{.centre = body.position, .angle = body.angle, .a = 1.6, .b = 0.8};
+    std::vector<double> errors;
+    for (const int n : {50, 100, 200, 400}) {
+        const FlowModel model = modelOf(withPanels(base, n));
+        const std::optional<BodySurface> surface = panelSurfaceOf(model);
+        if (!surface) return unable("Expected one panel body.");
+        double worst = 0.0;
+        for (std::size_t k = 0; k < surface->points.size(); ++k) {
+            const double v = ellipseSurfaceSpeed(e, 1.0, 20.0 * deg, 0.0, eccentricAnomaly(e, surface->points[k]));
+            worst = std::max(worst, std::abs(surface->cp[k] - (1.0 - v * v)));
+        }
+        errors.push_back(worst);
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: max |Cp − Cp_exact|", n), num(worst),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], worst))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 2.5e-3;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points for N = 400";
+    r.note = "200 points on a 2:1 ellipse at 25°, joined by the smooth outline (a cubic spline), and N panels laid along it as "
+             "for a drawn body. The spline is fourth-order accurate in the point spacing. On this general spacing the "
+             "constant-strength panels converge at first order; the ellipse preset's equal steps in η are special (second "
+             "order).";
+    if (order(errors[2], errors[3]) < 0.8) {
+        r.error = inf;
+        r.note += " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelAirfoil() {
+    VerificationResult r;
+    // NACA 0012: the vertices on y = ±y_t(x) of the formula, written out here again.
+    const auto halfThickness = [](double t, double x) {
+        return t / 0.2 * (0.2969 * std::sqrt(x) - 0.1260 * x - 0.3516 * x * x + 0.2843 * std::pow(x, 3) - 0.1036 * std::pow(x, 4));
+    };
+    const PanelBody symmetric{.shape = PanelShape::Naca, .semiAxisA = 0.5, .semiAxisB = 0.06, .panels = 120, .nacaCamber = 0};
+    double geometry = 0.0;
+    for (const Vec2 p : panelVertices(symmetric)) {
+        const double x = p.x + 0.5; // chord 1 from the leading edge
+        geometry = std::max(geometry, std::abs(std::abs(p.y) - halfThickness(0.12, std::clamp(x, 0.0, 1.0))));
+    }
+    r.comparisons.push_back({"NACA 0012, 120 panels: max ||y| − y_t(x)| / c", num(geometry), "0"});
+
+    // NACA 2412 at 5°: a closed body adds no fluid, Σλs → 0.
+    std::vector<double> errors;
+    double drag = 0.0;
+    for (const int n : {50, 100, 200}) {
+        const FlowModel model = modelOf(withPanels(nacaScene(), n));
+        const std::optional<BodySurface> surface = panelSurfaceOf(model);
+        if (!surface) return unable("Expected one panel body.");
+        const SourcePanels& panels = model.field.panelBodies.front();
+        errors.push_back(std::abs(panels.netSource) / panels.perimeter());
+        drag = bodyForces(*surface, model).drag / 3.0;
+        r.samples += n;
+        r.comparisons.push_back({std::format("NACA 2412 at 5°, N = {}: Σλs / V∞ perimeter", n), num(errors.back()),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], errors.back()))
+                                                   : std::string("0")});
+    }
+    r.comparisons.push_back({"NACA 2412 at 5°, N = 200: c_d from Cp", num(drag), "0, slowly (see the note)"});
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "|Σλs| / V∞ perimeter of the NACA 2412 for N = 200";
+    r.note = "An airfoil is not symmetric, so Σλs = 0 is a real test here, not a symmetry. Without circulation the flow has to "
+             "turn round the sharp trailing edge, where the exact speed is infinite: the force from Cp approaches d'Alembert's "
+             "zero only slowly, and the airfoil gets no lift. The Kutta condition, which needs vortex panels, removes that "
+             "singularity.";
+    if (geometry > 1e-12 || order(errors[1], errors[2]) < 0.8) {
+        r.error = inf;
+        r.note += geometry > 1e-12 ? " The vertices are off the NACA formula." : " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelConcave() {
+    VerificationResult r;
+    const FlowModel model = modelOf(crescentScene());
+    if (model.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+    const SourcePanels& body = model.field.panelBodies.front();
+    if (body.starShaped) return unable("The crescent should not be star-shaped.");
+    double residual = 0.0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        residual = std::max(residual, std::abs(dot(model.field.velocity(body.controlPoints[i]), body.normals[i])));
+    }
+    // Every node outside the body against the panels summed directly.
+    double sum = 0.0;
+    int nodes = 0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            if (body.contains(p)) continue;
+            std::complex<double> direct{};
+            for (std::size_t k = 0; k < body.size(); ++k) {
+                const Vec2 z1 = body.vertices[k];
+                const Vec2 z2 = body.vertices[(k + 1) % body.size()];
+                const std::complex<double> t = std::complex<double>(z2.x - z1.x, z2.y - z1.y) / length(z2 - z1);
+                direct += body.strengths[k] / (2.0 * pi) * std::conj(t) *
+                          std::log(std::complex<double>(p.x - z1.x, p.y - z1.y) / std::complex<double>(p.x - z2.x, p.y - z2.y));
+            }
+            sum = std::max(sum, std::abs(body.complexVelocity(p) - direct));
+            ++nodes;
+        }
+    }
+    r.samples = nodes + static_cast<int>(body.size());
+    r.error = std::max(residual, sum);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |v·n| / V∞ at the control points, and max |W − W_direct| / V∞ over every node outside";
+    r.comparisons = {{"Crescent, 120 panels: max |v·n| / V∞ at the control points", num(residual), "0"},
+                     {"Every node outside: max |W − W_direct| / V∞", num(sum), "0"},
+                     {"Inside the hollow of the crescent", model.field.inDomain({-0.3, 0.0}) ? "fluid" : "body", "fluid"}};
+    r.note = std::format("{} nodes. No point inside the crescent sees all of its outline, so its panels are summed one by one "
+                         "(and far away by the Laurent series) instead of by vertex.", count(nodes));
+    if (!model.field.inDomain({-0.3, 0.0})) r.error = inf;
+    return finish(std::move(r));
+}
+
 
 // --- The list -----------------------------------------------------------------------------
 
@@ -2578,6 +2771,22 @@ const VerificationCheck k_checks[] = {
      "Check v·n at every control point of a square and an ellipse that feel each other, and the force and Σλs of each "
      "alone.",
      panelBluffScene, panelBoundary},
+    {k_panels, "Drawn outlines",
+     "A drawn or imported body is the smooth curve through its points (a cubic spline), with N panels laid along it. Through "
+     "points on an ellipse, that curve must be the ellipse, and its flow the ellipse's.",
+     "Join 24 to 96 points on a 2:1 ellipse and measure how far the panels stray from it; then compare Cp with the exact "
+     "ellipse for 50 to 400 panels.",
+     drawnEllipseScene, panelOutline},
+    {k_panels, "NACA 4-digit airfoils",
+     "The NACA 4-digit sections are y = ±y_t(x) about the camber line, y_t = 5t (0.2969√x − 0.1260x − 0.3516x² + 0.2843x³ − "
+     "0.1036x⁴). A closed body adds no fluid: Σλs = 0.",
+     "Check the vertices of a NACA 0012 against the formula, and Σλs on a NACA 2412 at 5° for 50 to 200 panels.", nacaScene,
+     panelAirfoil},
+    {k_panels, "Bodies that are not star-shaped",
+     "Panels sum the same way for any closed shape, concave or not: W = Σ (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)).",
+     "A crescent, which no point inside it sees whole: check v·n at its control points and the velocity at every node "
+     "outside against the panels summed directly.",
+     crescentScene, panelConcave},
 };
 
 } // namespace

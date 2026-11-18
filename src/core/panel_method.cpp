@@ -1,6 +1,7 @@
 #include "core/panel_method.hpp"
 
 #include "core/flow_field.hpp"
+#include "core/panel_geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -76,6 +77,84 @@ std::vector<double> solveDense(std::vector<double> a, std::vector<double> b) {
     return x;
 }
 
+bool crossesProperly(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
+    const double o1 = cross(b - a, c - a);
+    const double o2 = cross(b - a, d - a);
+    const double o3 = cross(d - c, a - c);
+    const double o4 = cross(d - c, b - c);
+    return ((o1 > 0.0) != (o2 > 0.0)) && ((o3 > 0.0) != (o4 > 0.0)) && o1 != 0.0 && o2 != 0.0;
+}
+
+// Every vertex sees `centre` without crossing a panel (and `centre` is inside).
+bool isStarShaped(const std::vector<Vec2>& v, Vec2 centre) {
+    const std::size_t n = v.size();
+    if (!insidePolygon(v, centre)) return false;
+    for (std::size_t k = 0; k < n; ++k) {
+        for (std::size_t j = 0; j < n; ++j) {
+            if (j == k || (j + 1) % n == k) continue; // the two panels that end at vertex k
+            if (crossesProperly(v[k], centre, v[j], v[(j + 1) % n])) return false;
+        }
+    }
+    return true;
+}
+
+// The vertices in the body's own frame, before it is turned and moved.
+std::vector<Vec2> localVertices(const PanelBody& body) {
+    const int n = body.panels;
+    const double a = body.semiAxisA;
+    const double b = body.semiAxisB;
+    std::vector<Vec2> local;
+    local.reserve(static_cast<std::size_t>(n));
+    switch (body.shape) {
+    case PanelShape::Ellipse:
+        for (int k = 0; k < n; ++k) {
+            const double eta = pi + pi / n - 2.0 * pi * k / n;
+            local.push_back({a * std::cos(eta), b * std::sin(eta)});
+        }
+        break;
+    case PanelShape::Rectangle: {
+        // Up the left side, along the top, down the right side, back along the bottom.
+        const int half = n / 2;
+        const int along = std::clamp(static_cast<int>(std::lround(half * a / (a + b))), 1, half - 1);
+        const int across = half - along;
+        const Vec2 corners[] = {{-a, -b}, {-a, b}, {a, b}, {a, -b}};
+        const int counts[] = {across, along, across, along};
+        for (int side = 0; side < 4; ++side) {
+            const Vec2 from = corners[side];
+            const Vec2 to = corners[(side + 1) % 4];
+            for (int i = 0; i < counts[side]; ++i) {
+                const double s = 0.5 * (1.0 - std::cos(pi * i / counts[side]));
+                local.push_back(from + (to - from) * s);
+            }
+        }
+        break;
+    }
+    case PanelShape::Naca:
+        // Unit chord from the leading edge at (0, 0): scaled to the chord 2a, the middle of it at 0.
+        for (const Vec2 p : nacaVertices(body.nacaCamber / 100.0, body.nacaPosition / 10.0, b / a, n)) {
+            local.push_back({(p.x - 0.5) * 2.0 * a, p.y * 2.0 * a});
+        }
+        break;
+    case PanelShape::Custom: {
+        // Stretched from the outline's bounding box to [-a, a] x [-b, b].
+        const std::vector<Vec2> outline = cleanOutline(body.outline);
+        Vec2 lo = outline.front();
+        Vec2 hi = outline.front();
+        for (const Vec2 p : outline) {
+            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+            hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+        }
+        const Vec2 mid = (lo + hi) * 0.5;
+        std::vector<Vec2> scaled;
+        scaled.reserve(outline.size());
+        for (const Vec2 p : outline) scaled.push_back({(p.x - mid.x) / (0.5 * (hi.x - lo.x)) * a, (p.y - mid.y) / (0.5 * (hi.y - lo.y)) * b});
+        local = distributeAlongOutline(scaled, body.smooth, n);
+        break;
+    }
+    }
+    return local;
+}
+
 // Fills in everything that follows from the vertices and the strengths.
 void finishBody(SourcePanels& body) {
     const std::size_t n = body.size();
@@ -90,13 +169,16 @@ void finishBody(SourcePanels& body) {
 
     body.netSource = 0.0;
     body.vertexWeights.assign(n, {});
+    body.panelWeights.assign(n, {});
     for (std::size_t j = 0; j < n; ++j) {
         const Complex t = direction(body.vertices[j], body.vertices[(j + 1) % n]);
         const Complex weight = body.strengths[j] * std::conj(t);
         body.vertexWeights[j] += weight;           // panel j starts at vertex j
         body.vertexWeights[(j + 1) % n] -= weight; // and ends at vertex j + 1
+        body.panelWeights[j] = weight / (2.0 * pi);
         body.netSource += body.strengths[j] * body.lengths[j];
     }
+    body.starShaped = isStarShaped(body.vertices, body.centre);
 
     // a_m / radius^m = -(1 / 2 pi m) sum_k c_k ((v_k - z_c) / radius)^m: scaled so no power overflows.
     body.laurent.assign(k_laurentTerms, {});
@@ -117,8 +199,18 @@ const char* shapeName(PanelShape shape) {
     switch (shape) {
     case PanelShape::Ellipse: return "ellipse";
     case PanelShape::Rectangle: return "rectangle";
+    case PanelShape::Naca: return "naca";
+    case PanelShape::Custom: return "outline";
     }
     return "?";
+}
+
+std::string nacaName(const PanelBody& body) {
+    const int thickness = static_cast<int>(std::lround(100.0 * body.semiAxisB / body.semiAxisA));
+    const int camber = std::abs(body.nacaCamber);
+    const std::string digits = std::to_string(camber) + std::to_string(camber == 0 ? 0 : body.nacaPosition) +
+                               (thickness < 10 ? "0" : "") + std::to_string(thickness);
+    return (body.nacaCamber < 0 ? "inverted NACA " : "NACA ") + digits;
 }
 
 std::optional<std::string> panelBodyError(const PanelBody& body) {
@@ -126,44 +218,31 @@ std::optional<std::string> panelBodyError(const PanelBody& body) {
         !std::isfinite(body.semiAxisB) || !std::isfinite(body.angle)) {
         return "All parameters must be finite numbers.";
     }
-    if (!(body.semiAxisA > 0.0) || !(body.semiAxisB > 0.0)) return "The semi-axes a and b must be positive.";
+    if (!(body.semiAxisA > 0.0) || !(body.semiAxisB > 0.0)) return "The sizes a and b must be positive.";
     if (body.panels < k_minPanels || body.panels > k_maxPanels) {
         return "The number of panels N must be between " + std::to_string(k_minPanels) + " and " +
                std::to_string(k_maxPanels) + ".";
     }
-    if (body.shape == PanelShape::Rectangle && body.panels % 2 != 0) {
-        return "A rectangle needs an even number of panels N (the same number on opposite sides).";
+    switch (body.shape) {
+    case PanelShape::Ellipse: break;
+    case PanelShape::Rectangle:
+        if (body.panels % 2 != 0) return "A rectangle needs an even number of panels N (the same number on opposite sides).";
+        break;
+    case PanelShape::Naca:
+        if (body.panels % 2 != 0) return "An airfoil needs an even number of panels N (half on each surface).";
+        if (body.nacaCamber < -9 || body.nacaCamber > 9) return "The camber m must be 0 to 9 % of the chord.";
+        if (body.nacaCamber != 0 && (body.nacaPosition < 1 || body.nacaPosition > 9)) {
+            return "The position p of the camber must be 1 to 9 tenths of the chord.";
+        }
+        if (body.semiAxisB > 0.4 * body.semiAxisA) return "The thickness t/c = b/a must be at most 40%.";
+        break;
+    case PanelShape::Custom: return outlineError(body.outline, body.smooth, body.panels);
     }
     return std::nullopt;
 }
 
 std::vector<Vec2> panelVertices(const PanelBody& body) {
-    const int n = body.panels;
-    const double a = body.semiAxisA;
-    const double b = body.semiAxisB;
-    std::vector<Vec2> local;
-    local.reserve(static_cast<std::size_t>(n));
-    if (body.shape == PanelShape::Ellipse) {
-        for (int k = 0; k < n; ++k) {
-            const double eta = pi + pi / n - 2.0 * pi * k / n;
-            local.push_back({a * std::cos(eta), b * std::sin(eta)});
-        }
-    } else {
-        // Up the left side, along the top, down the right side, back along the bottom.
-        const int half = n / 2;
-        const int along = std::clamp(static_cast<int>(std::lround(half * a / (a + b))), 1, half - 1);
-        const int across = half - along;
-        const Vec2 corners[] = {{-a, -b}, {-a, b}, {a, b}, {a, -b}};
-        const int counts[] = {across, along, across, along};
-        for (int side = 0; side < 4; ++side) {
-            const Vec2 from = corners[side];
-            const Vec2 to = corners[(side + 1) % 4];
-            for (int i = 0; i < counts[side]; ++i) {
-                const double s = 0.5 * (1.0 - std::cos(pi * i / counts[side]));
-                local.push_back(from + (to - from) * s);
-            }
-        }
-    }
+    const std::vector<Vec2> local = localVertices(body);
     std::vector<Vec2> vertices;
     vertices.reserve(local.size());
     for (const Vec2 p : local) vertices.push_back(body.position + rotated(p, body.angle));
@@ -189,6 +268,20 @@ Complex SourcePanels::complexVelocity(Vec2 p) const {
         for (int m = terms; m >= 1; --m) sum = (sum + laurent[static_cast<std::size_t>(m - 1)]) * w;
         return sum;
     }
+    if (!starShaped) {
+        // Panel by panel: each logarithm is cut only along its own panel. On the panel itself (its
+        // control point) the ratio is negative real, and the limit from outside, on the right of the
+        // clockwise panel, has the argument -pi.
+        Complex sum{};
+        const std::size_t n = vertices.size();
+        for (std::size_t j = 0; j < n; ++j) {
+            const Complex ratio = toComplex(p - vertices[j]) / toComplex(p - vertices[(j + 1) % n]);
+            const bool onPanel = ratio.real() < 0.0 && std::abs(ratio.imag()) <= 1e-12 * -ratio.real();
+            const Complex log = onPanel ? Complex{std::log(-ratio.real()), -pi} : std::log(ratio);
+            sum += panelWeights[j] * log;
+        }
+        return sum;
+    }
     // log of each ratio written out (ln |r| from |r|^2, so no square root): this loop is where the
     // particles and streamlines spend their time near a body.
     const Complex q = 1.0 / dz;
@@ -209,6 +302,17 @@ Complex SourcePanels::complexVelocity(Vec2 p) const {
 }
 
 Complex SourcePanels::complexPotential(Vec2 p) const {
+    if (!starShaped) {
+        // F_j = (lambda_j / 2 pi) (conj(t_j) (u1 log u1 - u2 log u2) - L_j), u = z - the panel's ends.
+        Complex sum{};
+        const std::size_t n = vertices.size();
+        for (std::size_t j = 0; j < n; ++j) {
+            const Complex u1 = toComplex(p - vertices[j]);
+            const Complex u2 = toComplex(p - vertices[(j + 1) % n]);
+            sum += panelWeights[j] * (u1 * std::log(u1) - u2 * std::log(u2)) - strengths[j] * lengths[j] / (2.0 * pi);
+        }
+        return sum;
+    }
     const Complex dz = toComplex(p - centre);
     const Complex q = 1.0 / dz;
     Complex sum{};

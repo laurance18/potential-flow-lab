@@ -2,9 +2,10 @@
 
 An interactive 2D potential-flow simulator in C++20, built as a senior mechanical-engineering
 semester project. It superposes elementary flows (uniform flow, source/sink, vortex, doublet,
-sector flow) and straight symmetry walls, solves ellipse, circle and rectangle bodies with the
-source panel method, draws evenly spaced streamlines with direction arrows, equipotential lines
-and velocity-magnitude contours, and animates tracer particles on the GPU.
+sector flow) and straight symmetry walls, solves bodies of any shape with the source panel
+method (ellipses, rectangles, NACA 4-digit airfoils, outlines drawn on the plot or imported from
+airfoil coordinate files), draws evenly spaced streamlines with direction arrows, equipotential
+lines and velocity-magnitude contours, and animates tracer particles on the GPU.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
   with Apply / Cancel. Below them, the dye rake tool.
@@ -35,13 +36,14 @@ and velocity-magnitude contours, and animates tracer particles on the GPU.
   run from the command line.
 - **View** menu: streamline density, arrows, wall images, equipotential lines, a |V| or Cp
   background, surface pressure, stagnation point markers, panel source strengths, tracer particles.
-- **Source-panel bodies**: an ellipse, circle or rectangle cut into N straight source panels whose
-  strengths are solved so no fluid crosses the surface at the control points, in the flow of every
-  other element and body. Surface Cp at the control points against the exact ellipse solution,
+- **Source-panel bodies**: an ellipse, circle, rectangle, NACA 4-digit airfoil, an outline drawn
+  with the pencil tool or airfoil coordinates imported from a `.dat` file (File menu), cut into N
+  straight source panels whose strengths are solved so no fluid crosses the surface at the control
+  points, in the flow of every other element and body. Surface Cp at the control points against the exact ellipse solution,
   interior masked, a vortex inside gives the body circulation (lifting cylinder). View → Panel
   source strengths draws each panel's λ as a stick on the body, and the Cp panel plots λ against
   the exact source sheet.
-- **Verify** menu (F5): 51 checks run in front of you. Each compares the program with an exact
+- **Verify** menu (F5): 54 checks run in front of you. Each compares the program with an exact
   result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine bodies,
   dividing streamlines, wall and channel images, surface Cp, d'Alembert, Kutta–Joukowski and
   Blasius, the source panel method (exact on a cylinder, converging on an ellipse), the

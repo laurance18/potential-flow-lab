@@ -25,6 +25,9 @@
 // Far from the body (more than twice its radius from z_c) W is summed as its Laurent series in
 // 1 / (z - z_c), to full double precision but much faster than N logarithms.
 //
+// That needs every vertex to see the centre from inside the body (a star-shaped body: convex ones,
+// airfoils); other bodies sum the panels one by one (SourcePanels::starShaped).
+//
 // Inside the body the field is not physical (the panel sheets make their own interior flow), so
 // the flow domain excludes it (FlowField::inDomain), and the plot fills it in.
 //
@@ -45,27 +48,45 @@ namespace pfl {
 
 struct FlowField;
 
-enum class PanelShape { Ellipse, Rectangle };
+// Ellipse (a circle when a = b), rectangle, NACA 4-digit airfoil, or an outline of points (drawn on
+// the plot or read from an airfoil file); see panel_geometry.hpp for the last two.
+enum class PanelShape { Ellipse, Rectangle, Naca, Custom };
 
 inline constexpr int k_minPanels = 4;
 inline constexpr int k_maxPanels = 400;
 
-// A body to be modelled with source panels, as the user describes it.
+// A body to be modelled with source panels, as the user describes it. a and b are always half its
+// size along and across its own x axis: the semi-axes of an ellipse, the half-width and half-height
+// of a rectangle, half the chord and half the thickness of an airfoil (so t/c = b/a), the half-extents
+// of an outline's bounding box (the outline is stretched to fit them).
 struct PanelBody {
     PanelShape shape = PanelShape::Ellipse;
-    Vec2 position;           // centre
-    double semiAxisA = 1.0;  // a: half the length along the body's own x axis (a circle's radius when a = b)
-    double semiAxisB = 1.0;  // b: half the length across it
+    Vec2 position;           // centre (of an airfoil: the middle of the chord; of an outline: of its bounding box)
+    double semiAxisA = 1.0;  // a
+    double semiAxisB = 1.0;  // b
     double angle = 0.0;      // turns the body counter-clockwise about its centre
     int panels = 40;         // N
+    // NACA m p tt: the camber m (% of the chord, negative for an airfoil turned upside down) at p
+    // tenths of the chord; the thickness tt comes from b / a.
+    int nacaCamber = 2;
+    int nacaPosition = 4;
+    // An outline: its points in any frame and direction, the shape of the spline or polygon through
+    // them (see panel_geometry.hpp), and where it came from ("drawn", an airfoil's name).
+    std::vector<Vec2> outline;
+    bool smooth = true;
+    std::string name;
 
     friend bool operator==(const PanelBody&, const PanelBody&) = default;
 };
 
 const char* shapeName(PanelShape shape);
 
-// Why the body is invalid (axes not positive, too few or too many panels, an odd number on a
-// rectangle, which has the same number on opposite sides), or nullopt.
+// "NACA 2412": the designation of an airfoil body, its thickness rounded to whole percent.
+std::string nacaName(const PanelBody& body);
+
+// Why the body is invalid (sizes not positive, too few or too many panels, an odd number on a
+// rectangle or airfoil, which have the same number on opposite sides, an airfoil thicker than 40%,
+// an outline that crosses itself, ...), or nullopt.
 std::optional<std::string> panelBodyError(const PanelBody& body);
 
 // The N panel vertices, clockwise (so the body is on the right of each panel and perp(t) points out
@@ -74,6 +95,8 @@ std::optional<std::string> panelBodyError(const PanelBody& body);
 // puts a control point on each end of the a axis and closes the panels up at the pointed ends of a
 // slender ellipse. Rectangle (2a by 2b): the panels shared out between the sides in proportion to
 // their length, at least one per side, cosine-spaced along each side so they are short at the corners.
+// Airfoil: nacaVertices(), the leading edge at -a and the trailing edge at +a along the body's x
+// axis. Outline: distributeAlongOutline().
 std::vector<Vec2> panelVertices(const PanelBody& body);
 
 // Even-odd rule for the polygon with these vertices (not repeated at the end).
@@ -95,6 +118,12 @@ struct SourcePanels {
     Vec2 centre;          // where the vertex logarithms are cut to (the centroid)
     double radius = 0.0;  // largest distance of a vertex from the centre
     Rect box;             // bounding box of the vertices
+    // Every vertex sees the centre without crossing a panel, so the cuts of the vertex logarithms
+    // stay inside the body. A body that is not (a crescent, say) sums its panels one by one instead,
+    // with panelWeights = lambda_j conj(t_j) / 2 pi: the same velocity, a little more work. Its
+    // complex potential then has branch cuts out into the flow (in -x from every vertex).
+    bool starShaped = true;
+    std::vector<Complex> panelWeights;
     std::vector<Complex> vertexWeights; // c_k
     std::vector<Complex> laurent;       // a_m, m = 1 .. M: W = sum a_m / (z - z_c)^m beyond 2 radius
     double netSource = 0.0;             // Q = sum lambda_j L_j

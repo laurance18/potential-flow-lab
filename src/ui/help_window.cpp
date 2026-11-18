@@ -653,8 +653,9 @@ void HelpWindow::drawConventions() {
              "are exact; other layouts are truncated and the status bar says so.",
              "F + F_image", "W + W_image"},
             {"Source-panel body",
-             "An ellipse (a circle when a = b) or rectangle with semi-axes a, b, centre z₀ and rotation θ, cut into N "
-             "straight panels numbered clockwise. Panel j from z₁ to z₂ in direction e^(iθ_j) is a source sheet of "
+             "An ellipse (a circle when a = b), rectangle, NACA 4-digit airfoil or drawn / imported outline, half-sizes "
+             "a, b along and across its own axis, centre z₀ and rotation θ (an airfoil's angle of attack is −θ), cut "
+             "into N straight panels numbered clockwise. Panel j from z₁ to z₂ in direction e^(iθ_j) is a source sheet of "
              "strength λ_j (> 0 pushes fluid out); the λ_j are solved so that v·n = 0 at every panel midpoint.",
              "Σ (λ_j/2π) ∫ ln(z − z′) ds′ along panel j", "Σ (λ_j/2π) e^(−iθ_j) ln((z − z₁)/(z − z₂))"},
         };

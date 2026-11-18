@@ -15,11 +15,13 @@ namespace pfl {
 struct ToolbarAction {
     std::optional<ElementKind> element;
     bool placeRake = false;
+    bool drawBody = false; // start (or cancel) drawing the outline of a source-panel body
 };
 
 float toolbarWidth();
 
-// `placingRake` highlights the rake tool while a rake is being placed.
-ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake);
+// `placingRake` highlights the rake tool while a rake is being placed, `drawingBody` the outline tool
+// (just below the source-panel body) while an outline is being drawn.
+ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake, bool drawingBody);
 
 } // namespace pfl

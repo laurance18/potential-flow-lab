@@ -4,6 +4,7 @@ add_library(pfl_core STATIC
     flow_element.hpp flow_element.cpp
     flow_field.hpp flow_field.cpp
     image_system.hpp image_system.cpp
+    panel_geometry.hpp panel_geometry.cpp
     panel_method.hpp panel_method.cpp
     scene.hpp scene.cpp
     history.hpp history.cpp

@@ -13,7 +13,7 @@ constexpr float k_padding = 6.0f;
 
 float toolbarWidth() { return (k_buttonSize + 2.0f * k_padding) * uiScale(); }
 
-ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake) {
+ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake, bool drawingBody) {
     ToolbarAction action;
     const float s = uiScale();
     const float button = k_buttonSize * s;
@@ -45,6 +45,12 @@ ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake) {
         drawToolIcon(dl, buttonBackground(false), 0.78f * button, kind);
         ImGui::SetItemTooltip("%s", kindName(kind));
         ImGui::PopID();
+        if (kind == ElementKind::PanelBody) {
+            if (ImGui::InvisibleButton("##draw-body", ImVec2(button, button))) action.drawBody = true;
+            drawOutlineToolIcon(dl, buttonBackground(drawingBody), 0.78f * button);
+            ImGui::SetItemTooltip("Draw a source-panel body\nClick points around the shape (or drag to sketch it), then "
+                                  "click the first point to close it.");
+        }
     }
 
     ImGui::Separator();

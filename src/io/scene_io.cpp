@@ -18,6 +18,7 @@ using nlohmann::json;
 constexpr const char* k_format = "pfl-scene";
 constexpr int k_version = 1;
 constexpr double k_degrees = 180.0 / std::numbers::pi;
+constexpr std::array k_panelShapes = {PanelShape::Ellipse, PanelShape::Rectangle, PanelShape::Naca, PanelShape::Custom};
 
 template <typename... Ts>
 struct Overloaded : Ts... {
@@ -52,14 +53,26 @@ json elementToJson(const SceneElement& element) {
                 return {{"type", "wall"}, {"x", e.point.x}, {"y", e.point.y}, {"angle_deg", e.angle * k_degrees}};
             },
             [](const PanelBody& e) -> json {
-                return {{"type", "source_panels"},
-                        {"shape", shapeName(e.shape)},
-                        {"x", e.position.x},
-                        {"y", e.position.y},
-                        {"a", e.semiAxisA},
-                        {"b", e.semiAxisB},
-                        {"angle_deg", e.angle * k_degrees},
-                        {"panels", e.panels}};
+                json j = {{"type", "source_panels"},
+                          {"shape", shapeName(e.shape)},
+                          {"x", e.position.x},
+                          {"y", e.position.y},
+                          {"a", e.semiAxisA},
+                          {"b", e.semiAxisB},
+                          {"angle_deg", e.angle * k_degrees},
+                          {"panels", e.panels}};
+                if (e.shape == PanelShape::Naca) {
+                    j["naca_camber"] = e.nacaCamber;
+                    j["naca_position"] = e.nacaPosition;
+                }
+                if (e.shape == PanelShape::Custom) {
+                    json points = json::array();
+                    for (const Vec2 p : e.outline) points.push_back({p.x, p.y});
+                    j["name"] = e.name;
+                    j["smooth"] = e.smooth;
+                    j["outline"] = points;
+                }
+                return j;
             },
         },
         element);
@@ -90,9 +103,18 @@ SceneElement elementFromJson(const json& j) {
                        .semiAxisB = num("b"),
                        .angle = j.value("angle_deg", 0.0) / k_degrees,
                        .panels = j.at("panels").get<int>()};
-        if (shape == shapeName(PanelShape::Ellipse)) body.shape = PanelShape::Ellipse;
-        else if (shape == shapeName(PanelShape::Rectangle)) body.shape = PanelShape::Rectangle;
-        else throw std::runtime_error("unknown panel body shape \"" + shape + "\"");
+        const auto known = std::ranges::find_if(k_panelShapes, [&](PanelShape s) { return shape == shapeName(s); });
+        if (known == k_panelShapes.end()) throw std::runtime_error("unknown panel body shape \"" + shape + "\"");
+        body.shape = *known;
+        if (body.shape == PanelShape::Naca) {
+            body.nacaCamber = j.at("naca_camber").get<int>();
+            body.nacaPosition = j.at("naca_position").get<int>();
+        }
+        if (body.shape == PanelShape::Custom) {
+            body.name = j.value("name", std::string());
+            body.smooth = j.value("smooth", true);
+            for (const json& p : j.at("outline")) body.outline.push_back({p.at(0).get<double>(), p.at(1).get<double>()});
+        }
         return body;
     }
     throw std::runtime_error("unknown element type \"" + type + "\"");

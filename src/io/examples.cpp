@@ -49,6 +49,13 @@ constexpr ExampleScene k_examples[] = {
     {"panel_bluff_bodies.json", "Source panels: square and circle",
      "A square and a circle, solved together so each feels the other, in U∞ = 1.\n"
      "The square's corners are where the speed peaks."},
+    {"panel_naca2412.json", "Source panels: NACA 2412 airfoil",
+     "A NACA 2412 of chord 3 at 5° angle of attack, 100 source panels. Without circulation it gets no\n"
+     "lift, and the flow has to turn round the sharp trailing edge, where the panels need huge strengths.\n"
+     "That is what the Kutta condition of a vortex sheet fixes."},
+    {"panel_drawn_shape.json", "Source panels: a drawn shape",
+     "A body drawn as 14 points, joined by a smooth curve and cut into 80 panels.\n"
+     "Draw your own with the pencil tool below the source-panel body."},
 };
 
 } // namespace

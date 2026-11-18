@@ -162,6 +162,10 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
             if (ImGui::MenuItem("Save", "Ctrl+S")) actions.save = true;
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) actions.saveAs = true;
             ImGui::Separator();
+            if (ImGui::MenuItem("Import airfoil coordinates (.dat)...")) actions.importAirfoil = true;
+            ImGui::SetItemTooltip("Read an airfoil's x y points (Selig or Lednicer layout, as in the UIUC airfoil\n"
+                                  "database) into a new source-panel body, then adjust it in the dialog.");
+            ImGui::Separator();
             const bool hasFlow = !scene.elements.empty();
             if (ImGui::MenuItem("Export image (PNG)...", nullptr, false, hasFlow)) actions.exportImage = true;
             ImGui::SetItemTooltip("Save the plot, axes included, as it is shown now.");

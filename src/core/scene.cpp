@@ -42,6 +42,15 @@ std::string describeBody(const PanelBody& e) {
         return std::format("{:.4g} × {:.4g} rectangle at {}{}, N = {}", 2.0 * e.semiAxisA, 2.0 * e.semiAxisB,
                            formatPoint(e.position), turn, e.panels);
     }
+    if (e.shape == PanelShape::Naca) {
+        return std::format("{}, chord {:.4g} at {}{}, N = {}", nacaName(e), 2.0 * e.semiAxisA, formatPoint(e.position),
+                           turn, e.panels);
+    }
+    if (e.shape == PanelShape::Custom) {
+        return std::format("{} outline \"{}\" ({} points), {:.4g} × {:.4g} at {}{}, N = {}", e.smooth ? "smooth" : "straight",
+                           e.name.empty() ? "custom" : e.name, e.outline.size(), 2.0 * e.semiAxisA, 2.0 * e.semiAxisB,
+                           formatPoint(e.position), turn, e.panels);
+    }
     if (e.semiAxisA == e.semiAxisB) {
         return std::format("circle a = {:.4g} at {}, N = {}", e.semiAxisA, formatPoint(e.position), e.panels);
     }

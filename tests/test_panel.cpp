@@ -1,13 +1,16 @@
+#include "core/panel_geometry.hpp"
 #include "core/panel_method.hpp"
 #include "core/parameters.hpp"
 #include "core/scene.hpp"
 #include "core/surface_pressure.hpp"
+#include "io/airfoil_io.hpp"
 #include "io/scene_io.hpp"
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -371,4 +374,240 @@ TEST_CASE("panel bodies are described, moved, saved and reopened") {
     const std::string odd = R"({"format": "pfl-scene", "version": 1, "elements": [
         {"type": "source_panels", "shape": "rectangle", "x": 0, "y": 0, "a": 1, "b": 1, "panels": 21}]})";
     CHECK(sceneFromJson(odd).error.find("even number") != std::string::npos);
+}
+
+// --- NACA airfoils, outlines, airfoil files -------------------------------------------------
+
+namespace {
+
+std::vector<Vec2> ellipsePoints(int count, double a, double b, double phase) {
+    std::vector<Vec2> points;
+    for (int k = 0; k < count; ++k) {
+        const double t = 2.0 * pi * k / count + phase;
+        points.push_back({a * std::cos(t), b * std::sin(t)});
+    }
+    return points;
+}
+
+// An outline body that fits its points' bounding box (as a drawn one does), so it is not stretched.
+PanelBody outlineBody(std::vector<Vec2> points, bool smooth, int panels) {
+    Vec2 lo = points.front();
+    Vec2 hi = points.front();
+    for (const Vec2 p : points) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    PanelBody body{.shape = PanelShape::Custom, .position = (lo + hi) * 0.5, .semiAxisA = 0.5 * (hi.x - lo.x),
+                   .semiAxisB = 0.5 * (hi.y - lo.y), .panels = panels};
+    body.outline = std::move(points);
+    body.smooth = smooth;
+    body.name = "test";
+    return body;
+}
+
+// A crescent: not star-shaped about its centroid.
+std::vector<Vec2> crescent() {
+    std::vector<Vec2> points;
+    for (int k = 0; k <= 40; ++k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({std::cos(t), std::sin(t)});
+    }
+    for (int k = 40; k >= 0; --k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({0.5 * std::cos(t) - 0.3, 0.5 * std::sin(t)});
+    }
+    return points;
+}
+
+} // namespace
+
+TEST_CASE("NACA 4-digit airfoils follow the thickness and camber formulas") {
+    CHECK(nacaHalfThickness(0.12, 0.0) == 0.0);
+    CHECK(nacaHalfThickness(0.12, 1.0) == doctest::Approx(0.0).epsilon(1e-12)); // closed trailing edge
+    CHECK(nacaHalfThickness(0.12, 0.3) == doctest::Approx(0.06).epsilon(2e-3)); // thickest near 30% chord
+    CHECK(nacaCamber(0.02, 0.4, 0.4) == doctest::Approx(0.02));
+    CHECK(nacaCamberSlope(0.02, 0.4, 0.4) == doctest::Approx(0.0));
+
+    const std::vector<Vec2> symmetric = nacaVertices(0.0, 0.0, 0.12, 40);
+    REQUIRE(symmetric.size() == 40);
+    CHECK(symmetric.front() == Vec2{1.0, 0.0});
+    CHECK(symmetric[20] == Vec2{0.0, 0.0});
+    CHECK(signedArea(symmetric) < 0.0);
+    for (std::size_t k = 1; k < 20; ++k) {
+        CHECK(symmetric[k].y == doctest::Approx(-nacaHalfThickness(0.12, symmetric[k].x)));
+        CHECK(symmetric[40 - k].x == doctest::Approx(symmetric[k].x)); // mirror images
+        CHECK(symmetric[40 - k].y == doctest::Approx(-symmetric[k].y));
+    }
+
+    PanelBody airfoil{.shape = PanelShape::Naca, .position = {0.5, 0.2}, .semiAxisA = 1.5, .semiAxisB = 0.18, .panels = 60};
+    CHECK(nacaName(airfoil) == "NACA 2412");
+    CHECK_FALSE(panelBodyError(airfoil));
+    const std::vector<Vec2> v = panelVertices(airfoil);
+    CHECK(v.front().x == doctest::Approx(2.0));  // trailing edge at x0 + a
+    CHECK(v[30].x == doctest::Approx(-1.0));     // leading edge at x0 - a
+    CHECK(isSimplePolygon(v));
+    airfoil.panels = 61;
+    CHECK(panelBodyError(airfoil));
+    airfoil.panels = 60;
+    airfoil.semiAxisB = 0.7;
+    CHECK(panelBodyError(airfoil)); // 47% thick
+    airfoil.semiAxisB = 0.18;
+    airfoil.nacaCamber = 4;
+    airfoil.nacaPosition = 0;
+    CHECK(panelBodyError(airfoil));
+    airfoil.nacaCamber = 0;
+    CHECK(nacaName(airfoil) == "NACA 0012");
+}
+
+TEST_CASE("outlines are cleaned, turned clockwise and checked for crossings") {
+    const std::vector<Vec2> square{{0, 0}, {1, 0}, {1, 1}, {1, 1}, {0, 1}, {0, 0}};
+    const std::vector<Vec2> clean = cleanOutline(square);
+    CHECK(clean.size() == 4);
+    CHECK(signedArea(clean) < 0.0);
+    CHECK(isSimplePolygon(clean));
+    const std::vector<Vec2> bowTie{{0, 0}, {2, 2}, {2, 0}, {0, 1}};
+    CHECK_FALSE(isSimplePolygon(bowTie));
+    CHECK(outlineError(bowTie, true, 40)->find("crosses") != std::string::npos);
+    CHECK(outlineError(std::vector<Vec2>{{0, 0}, {1, 0}}, true, 40));
+    CHECK(outlineCorners(clean, false) == 4);
+    CHECK(outlineCorners(clean, true) == 0); // 90 degrees is not sharp enough to keep in a smooth outline
+    CHECK(outlineError(clean, false, 3)->find("at least") != std::string::npos);
+}
+
+TEST_CASE("panels laid along an outline keep its corners and its shape") {
+    SUBCASE("a straight square: a vertex on every corner, the rest on the sides") {
+        const std::vector<Vec2> outline = cleanOutline(std::vector<Vec2>{{0, 0}, {2, 0}, {2, 1}, {0, 1}});
+        const std::vector<Vec2> v = distributeAlongOutline(outline, false, 30);
+        REQUIRE(v.size() == 30);
+        for (const Vec2 corner : outline) CHECK(std::ranges::any_of(v, [&](Vec2 p) { return length(p - corner) < 1e-12; }));
+        for (const Vec2 p : v) CHECK((std::abs(p.x) < 1e-12 || std::abs(p.x - 2) < 1e-12 || std::abs(p.y) < 1e-12 || std::abs(p.y - 1) < 1e-12));
+        CHECK(signedArea(v) == doctest::Approx(-2.0));
+    }
+    SUBCASE("a smooth outline through points on an ellipse lies on the ellipse") {
+        for (const int points : {24, 48}) {
+            const std::vector<Vec2> v = distributeAlongOutline(cleanOutline(ellipsePoints(points, 1.6, 0.8, 0.0)), true, 100);
+            double worst = 0.0;
+            for (const Vec2 p : v) worst = std::max(worst, std::abs(std::hypot(p.x / 1.6, p.y / 0.8) - 1.0));
+            CHECK(worst < (points == 24 ? 1e-3 : 5e-5)); // fourth order in the point spacing
+        }
+    }
+    SUBCASE("a circle gets equal panels") {
+        const std::vector<Vec2> v = distributeAlongOutline(cleanOutline(ellipsePoints(64, 1.0, 1.0, 0.0)), true, 40);
+        for (std::size_t k = 0; k < v.size(); ++k) {
+            CHECK(length(v[(k + 1) % v.size()] - v[k]) == doctest::Approx(2.0 * std::sin(pi / 40.0)).epsilon(2e-3));
+        }
+    }
+    SUBCASE("a sharp trailing edge stays a vertex, with short panels at it") {
+        const std::vector<Vec2> points = nacaVertices(0.0, 0.0, 0.12, 160);
+        const std::vector<Vec2> v = distributeAlongOutline(cleanOutline(points), true, 80);
+        REQUIRE(v.size() == 80);
+        CHECK(std::ranges::any_of(v, [](Vec2 p) { return length(p - Vec2{1.0, 0.0}) < 1e-12; }));
+        const auto te = std::ranges::find_if(v, [](Vec2 p) { return length(p - Vec2{1.0, 0.0}) < 1e-12; }) - v.begin();
+        const double next = length(v[static_cast<std::size_t>(te + 1) % 80] - v[static_cast<std::size_t>(te)]);
+        CHECK(next < 0.2 * (2.0 / 80.0)); // much shorter than an even share of the perimeter
+    }
+}
+
+TEST_CASE("a drawn outline of an ellipse converges to the ellipse's flow") {
+    double previous = 1.0;
+    for (const int n : {50, 100, 200}) {
+        const PanelBody body = outlineBody(ellipsePoints(200, 1.6, 0.8, 0.0), true, n);
+        REQUIRE_FALSE(panelBodyError(body));
+        const FlowModel model = buildFlowModel({.elements = {UniformFlow{.speed = 1.0, .angle = 0.3}, body}});
+        const BodySurface surface = findBodySurfaces(model, k_view).front();
+        double worst = 0.0;
+        for (std::size_t k = 0; k < surface.points.size(); ++k) {
+            const Vec2 p = surface.points[k] - body.position;
+            const double v = exactEllipseSurfaceSpeed(1.6, 0.8, 0.0, model.freeStream, 0.0, std::atan2(p.y / 0.8, p.x / 1.6));
+            worst = std::max(worst, std::abs(surface.cp[k] - (1.0 - v * v)));
+        }
+        CHECK(worst < 0.7 * previous);
+        previous = worst;
+    }
+    CHECK(previous < 3e-3);
+}
+
+TEST_CASE("a body that is not star-shaped sums its panels one by one") {
+    const PanelBody body = outlineBody(crescent(), false, 120);
+    REQUIRE_FALSE(panelBodyError(body));
+    const FlowModel model = buildFlowModel({.elements = {UniformFlow{.speed = 1.0, .angle = 0.2}, body}});
+    REQUIRE(model.field.panelBodies.size() == 1);
+    const SourcePanels& panels = model.field.panelBodies.front();
+    CHECK_FALSE(panels.starShaped);
+    CHECK(normalFlowResidual(panels, model.field) < 1e-13);
+    // Inside the hollow of the crescent is fluid.
+    CHECK(model.field.inDomain({-0.3, 0.0}));
+    CHECK(model.field.inDomain({0.75, 0.0})); // and so is its opening
+    CHECK_FALSE(model.field.inDomain({0.0, 0.8}));
+    // The Laurent series agrees with the panel sum beyond two radii.
+    for (int k = 0; k < 12; ++k) {
+        const Vec2 dir{std::cos(2.0 * pi * k / 12.0), std::sin(2.0 * pi * k / 12.0)};
+        const Vec2 far = panels.centre + dir * (2.0 * panels.radius * 1.001);
+        Complex direct{};
+        for (std::size_t j = 0; j < panels.size(); ++j) {
+            direct += panels.panelWeights[j] *
+                      std::log(toComplex(far - panels.vertices[j]) / toComplex(far - panels.vertices[(j + 1) % panels.size()]));
+        }
+        CHECK(std::abs(panels.complexVelocity(far) - direct) < 1e-13);
+    }
+    // dF/dz = W away from the branch cuts.
+    const Vec2 p{0.0, 1.6};
+    constexpr double h = 1e-5;
+    const Complex derivative = (panels.complexPotential(p + Vec2{h, 0.0}) - panels.complexPotential(p - Vec2{h, 0.0})) / (2.0 * h);
+    CHECK(std::abs(derivative - panels.complexVelocity(p)) < 1e-7);
+}
+
+TEST_CASE("airfoil coordinate files are read in Selig and Lednicer layouts") {
+    // NACA 0012 from its own formula, written both ways.
+    const std::vector<Vec2> v = nacaVertices(0.0, 0.0, 0.12, 60); // TE, lower to LE, upper back
+    std::string selig = "NACA 0012 test\n";
+    // Selig: TE over the upper surface to the LE, then the lower surface back.
+    selig += "1.0 0.0\n";
+    for (std::size_t k = 59; k > 30; --k) selig += std::format("{} {}\n", v[k].x, v[k].y);
+    for (std::size_t k = 30; k >= 1; --k) selig += std::format("{} {}\n", v[k].x, v[k].y);
+    selig += "1.0 0.0\n";
+    const AirfoilLoadResult a = airfoilFromText(selig, "fallback");
+    REQUIRE(a.body);
+    CHECK(a.body->name == "NACA 0012 test");
+    CHECK(a.body->shape == PanelShape::Custom);
+    CHECK(a.body->semiAxisA == 1.0);
+    CHECK(a.body->semiAxisB == doctest::Approx(0.12).epsilon(0.02));
+
+    std::string lednicer = "NACA 0012 lednicer\n31. 31.\n\n";
+    for (std::size_t k = 30; k <= 59; ++k) lednicer += std::format("{} {}\n", v[k].x, v[k].y);
+    lednicer += "1.0 0.0\n\n";
+    for (std::size_t k = 30; k >= 1; --k) lednicer += std::format("{} {}\n", v[k].x, v[k].y);
+    lednicer += "1.0 0.0\n";
+    const AirfoilLoadResult b = airfoilFromText(lednicer, "fallback");
+    REQUIRE(b.body);
+    // The same shape either way.
+    const std::vector<Vec2> fromSelig = panelVertices(*a.body);
+    const std::vector<Vec2> fromLednicer = panelVertices(*b.body);
+    REQUIRE(fromSelig.size() == fromLednicer.size());
+    for (std::size_t k = 0; k < fromSelig.size(); ++k) CHECK(length(fromSelig[k] - fromLednicer[k]) < 1e-9);
+
+    CHECK(airfoilFromText("only a name\n", "x").error.find("fewer than 3") != std::string::npos);
+    CHECK(airfoilFromText("name\n0 0\n1 x\n", "x").error.find("not a pair") != std::string::npos);
+    CHECK(airfoilFromText("0 0\n1 0\n1 1\n0 1\n", "square").body->name == "square");
+}
+
+TEST_CASE("airfoils and outlines are saved and reopened") {
+    PanelBody airfoil{.shape = PanelShape::Naca, .semiAxisA = 1.0, .semiAxisB = 0.15, .angle = -0.1, .panels = 80};
+    airfoil.nacaCamber = 4;
+    airfoil.nacaPosition = 3;
+    PanelBody outline = outlineBody(crescent(), false, 100);
+    outline.name = "crescent";
+    const Scene scene{.elements = {UniformFlow{}, airfoil, outline}};
+    const SceneLoadResult loaded = sceneFromJson(sceneToJson(scene));
+    REQUIRE(loaded.scene);
+    const PanelBody& a = std::get<PanelBody>(loaded.scene->elements[1]);
+    CHECK(a.shape == PanelShape::Naca);
+    CHECK(a.nacaCamber == 4);
+    CHECK(a.nacaPosition == 3);
+    const PanelBody& o = std::get<PanelBody>(loaded.scene->elements[2]);
+    CHECK(o.shape == PanelShape::Custom);
+    CHECK(o.name == "crescent");
+    CHECK_FALSE(o.smooth);
+    CHECK(o.outline == outline.outline);
+    CHECK(describe(SceneElement{airfoil}).starts_with("NACA 4315, chord 2"));
 }

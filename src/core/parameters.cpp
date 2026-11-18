@@ -72,8 +72,8 @@ constexpr ElementParameter panelCount() {
             [](SceneElement& e, double v) {
                 PanelBody& body = std::get<PanelBody>(e);
                 const double limited = std::isfinite(v) ? std::clamp(v, -1e6, 1e6) : 0.0; // 0: invalid
-                body.panels = body.shape == PanelShape::Rectangle ? 2 * static_cast<int>(std::lround(0.5 * limited))
-                                                                  : static_cast<int>(std::lround(limited));
+                const bool even = body.shape == PanelShape::Rectangle || body.shape == PanelShape::Naca;
+                body.panels = even ? 2 * static_cast<int>(std::lround(0.5 * limited)) : static_cast<int>(std::lround(limited));
             }};
 }
 

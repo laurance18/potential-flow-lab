@@ -17,11 +17,14 @@ pfl_embed_resources(pfl_examples
         examples/panel_cylinder.json
         examples/panel_ellipse.json
         examples/panel_lifting_cylinder.json
-        examples/panel_bluff_bodies.json)
+        examples/panel_bluff_bodies.json
+        examples/panel_naca2412.json
+        examples/panel_drawn_shape.json)
 
 add_library(pfl_io STATIC
     scene_io.hpp scene_io.cpp
     examples.hpp examples.cpp
+    airfoil_io.hpp airfoil_io.cpp
     data_export.hpp data_export.cpp
     verification_checks.hpp verification_checks.cpp
     gif_writer.hpp gif_writer.cpp)

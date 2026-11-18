@@ -97,10 +97,14 @@ void drawPanelBodies(ImDrawList* dl, const FlowField& field) {
         pixels.resize(body.vertices.size());
         std::ranges::transform(body.vertices, pixels.begin(), toPixels);
         const int n = static_cast<int>(pixels.size());
-        // Both shapes are convex, as the fill needs. The vertices are clockwise in the plot, so
+        // The vertices are clockwise in the plot, so
         // counter-clockwise on screen (y down), and ImGui's anti-aliased fill wants them clockwise.
         std::vector<ImVec2> reversed(pixels.rbegin(), pixels.rend());
-        dl->AddConvexPolyFilled(reversed.data(), n, k_panelFillColor);
+        if (body.starShaped && body.body.shape != PanelShape::Custom && body.body.shape != PanelShape::Naca) {
+            dl->AddConvexPolyFilled(reversed.data(), n, k_panelFillColor);
+        } else {
+            dl->AddConcavePolyFilled(reversed.data(), n, k_panelFillColor); // airfoils and outlines need not be convex
+        }
         dl->AddPolyline(pixels.data(), n, k_panelColor, ImDrawFlags_Closed, 1.5f * s);
         float shortest = 1e30f;
         for (int k = 0; k < n; ++k) {
@@ -112,20 +116,39 @@ void drawPanelBodies(ImDrawList* dl, const FlowField& field) {
     }
 }
 
-// The source strength of every panel: a stick from its control point along the outward normal,
-// outwards for a source (lambda > 0) and inwards for a sink, its length proportional to |lambda| (the
-// largest of all the panels gets k_strengthStickPx), and a line through the tips: the strength
-// distribution as a polar plot around the body. `hovered` (body, panel) is highlighted. Returns the
-// pixels per unit of lambda, for the caption.
-constexpr float k_strengthStickPx = 42.0f;
-float drawPanelStrengths(ImDrawList* dl, const FlowField& field, std::optional<std::pair<std::size_t, std::size_t>> hovered) {
-    const float s = uiScale();
-    double largest = 0.0;
+// The strength that gets a full-length stick: the largest |lambda| of all the panels, but no more than
+// 3 times the median, so that the huge strengths near a sharp trailing edge (where the exact flow is
+// singular, and the panels are short) do not shrink every other stick to nothing; theirs are cut
+// short. A circle or an ellipse keeps its largest (2 V cos 0 < 3 x 2 V cos 45).
+double strengthScale(const FlowField& field) {
+    std::vector<double> sizes;
     for (const SourcePanels& body : field.panelBodies) {
-        for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
+        for (const double lambda : body.strengths) sizes.push_back(std::abs(lambda));
     }
-    if (!(largest > 0.0)) return 0.0f;
-    const float perUnit = k_strengthStickPx * s / static_cast<float>(largest);
+    if (sizes.empty()) return 0.0;
+    const auto middle = sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2);
+    std::ranges::nth_element(sizes, middle);
+    const double median = *middle;
+    const double largest = *std::ranges::max_element(sizes);
+    return median > 0.0 ? std::min(largest, 3.0 * median) : largest;
+}
+
+// A stick's length in pixels: proportional to lambda, cut at 1.25 full lengths.
+constexpr float k_strengthStickPx = 42.0f;
+constexpr float k_strengthClip = 1.25f;
+float stickLength(double lambda, float perUnit) {
+    const float l = static_cast<float>(lambda) * perUnit;
+    const float limit = k_strengthClip * k_strengthStickPx * uiScale();
+    return std::clamp(l, -limit, limit);
+}
+
+// The source strength of every panel: a stick from its control point along the outward normal,
+// outwards for a source (lambda > 0) and inwards for a sink, its length proportional to |lambda| (see
+// strengthScale(); a stick cut short ends in a bar), and a line through the tips: the strength
+// distribution as a polar plot around the body. `hovered` (body, panel) is highlighted.
+void drawPanelStrengths(ImDrawList* dl, const FlowField& field, float perUnit,
+                        std::optional<std::pair<std::size_t, std::size_t>> hovered) {
+    const float s = uiScale();
     std::vector<ImVec2> tips;
     for (std::size_t b = 0; b < field.panelBodies.size(); ++b) {
         const SourcePanels& body = field.panelBodies[b];
@@ -135,16 +158,21 @@ float drawPanelStrengths(ImDrawList* dl, const FlowField& field, std::optional<s
             const ImVec2 base = toPixels(body.controlPoints[j]);
             // Screen y points down.
             const ImVec2 out = normalized({static_cast<float>(body.normals[j].x), static_cast<float>(-body.normals[j].y)});
-            const ImVec2 tip = base + out * (static_cast<float>(lambda) * perUnit);
+            const float length = stickLength(lambda, perUnit);
+            const ImVec2 tip = base + out * length;
             const bool highlight = hovered && hovered->first == b && hovered->second == j;
             const ImU32 colour = lambda >= 0.0 ? k_sourceColor : k_sinkColor;
             dl->AddLine(base, tip, highlight ? k_highlightColor : fadeColor(colour, 0.85f), (highlight ? 3.0f : 1.8f) * s);
-            dl->AddCircleFilled(tip, (highlight ? 3.5f : 2.0f) * s, highlight ? k_highlightColor : colour);
+            if (std::abs(length) < std::abs(static_cast<float>(lambda) * perUnit)) {
+                const ImVec2 across{-out.y, out.x};
+                dl->AddLine(tip - across * (4.0f * s), tip + across * (4.0f * s), highlight ? k_highlightColor : colour, 2.0f * s);
+            } else {
+                dl->AddCircleFilled(tip, (highlight ? 3.5f : 2.0f) * s, highlight ? k_highlightColor : colour);
+            }
             tips.push_back(tip);
         }
         dl->AddPolyline(tips.data(), static_cast<int>(tips.size()), IM_COL32(235, 235, 235, 150), ImDrawFlags_Closed, 1.2f * s);
     }
-    return perUnit;
 }
 
 // Colour of band `band` (0 lowest): Viridis for |V|, the diverging pressure scale for Cp.
@@ -528,11 +556,12 @@ void drawUniformMarker(ImDrawList* dl, const UniformFlow& flow, ImVec2 anchor, s
 
 // Screen distance from the mouse to an element's marker (walls: to the line). A panel body can be
 // grabbed anywhere inside it, though a marker on it (a vortex inside, say) is closer.
-float hitDistance(const SceneElement& element, ImVec2 mouse, const Rect& limits) {
+// `solved`: the panel body made from the element, if it is one (its panels are not recomputed here).
+float hitDistance(const SceneElement& element, ImVec2 mouse, const Rect& limits, const SourcePanels* solved) {
     if (const auto* body = std::get_if<PanelBody>(&element)) {
         const ImVec2 d = toPixels(body->position) - mouse;
         const float centre = std::sqrt(d.x * d.x + d.y * d.y);
-        const bool inside = !panelBodyError(*body) && insidePolygon(panelVertices(*body), toWorld(mouse));
+        const bool inside = solved != nullptr && solved->contains(toWorld(mouse));
         return inside ? std::min(centre, 0.9f * k_hitRadiusPx * uiScale()) : centre;
     }
     if (const auto* e = std::get_if<SymmetryWall>(&element)) {
@@ -556,6 +585,66 @@ float hitDistance(const SceneElement& element, ImVec2 mouse, const Rect& limits)
 void PlotView::toggleRakePlacement() {
     m_placingRake = !m_placingRake;
     m_rakeStart.reset();
+    m_drawingBody = false;
+    m_outline.clear();
+}
+
+void PlotView::toggleBodyDrawing() {
+    m_drawingBody = !m_drawingBody;
+    m_outline.clear();
+    m_placingRake = false;
+    m_rakeStart.reset();
+}
+
+void PlotView::updateBodyDrawing(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result) {
+    const float s = uiScale();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        m_drawingBody = false;
+        m_outline.clear();
+        return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !m_outline.empty()) m_outline.pop_back();
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const auto pixelsTo = [&](Vec2 p) {
+        const ImVec2 d = toPixels(p) - mouse;
+        return std::sqrt(d.x * d.x + d.y * d.y);
+    };
+    const bool overFirst = m_outline.size() >= 3 && pixelsTo(m_outline.front()) < 9.0f * s;
+    const bool close = m_outline.size() >= 3 &&
+                       ((hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && overFirst) ||
+                        (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter));
+    if (close) {
+        // A double-click has just added its own point twice; points a few pixels apart add nothing.
+        std::vector<Vec2> outline;
+        for (const Vec2 p : m_outline) {
+            if (outline.empty()) {
+                outline.push_back(p);
+                continue;
+            }
+            const ImVec2 d = toPixels(p) - toPixels(outline.back());
+            if (d.x * d.x + d.y * d.y >= 16.0f * s * s) outline.push_back(p);
+        }
+        if (outline.size() >= 3) result.drawnOutline = std::move(outline);
+        m_drawingBody = false;
+        m_outline.clear();
+        return;
+    }
+    const Vec2 point = snapped(mouseWorld, limits, heightPx, ImGui::GetIO().KeyShift);
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        m_outline.push_back(point);
+    } else if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left) && !m_outline.empty() && pixelsTo(m_outline.back()) >= 7.0f * s) {
+        m_outline.push_back(point); // sketching freehand
+    }
+
+    // The outline so far, a line on to the mouse, and the first point to close it on.
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    std::vector<ImVec2> pixels;
+    for (const Vec2 p : m_outline) pixels.push_back(toPixels(p));
+    if (hovered) pixels.push_back(mouse);
+    if (pixels.size() >= 2) dl->AddPolyline(pixels.data(), static_cast<int>(pixels.size()), k_panelColor, ImDrawFlags_None, 2.0f * s);
+    for (std::size_t k = 0; k < m_outline.size(); ++k) dl->AddCircleFilled(toPixels(m_outline[k]), (k == 0 ? 4.0f : 2.5f) * s, k_panelColor);
+    if (overFirst) dl->AddCircle(toPixels(m_outline.front()), 9.0f * s, k_highlightColor, 0, 2.0f * s);
 }
 
 void PlotView::updateGrab(const Scene& scene, Vec2 mouseWorld, const Rect& limits, float heightPx,
@@ -655,7 +744,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
     // decision uses last frame's hover, since ImPlot handles the press inside BeginPlot.
     ImPlotInputMap& input = ImPlot::GetInputMap();
     const int panMod = input.PanMod;
-    if (m_grab || m_grabbableHovered || m_placingRake) input.PanMod = k_noPan;
+    if (m_grab || m_grabbableHovered || m_placingRake || m_drawingBody) input.PanMod = k_noPan;
 
     constexpr ImPlotFlags plotFlags = ImPlotFlags_Equal | ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
                                       ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
@@ -700,20 +789,17 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         // The panel whose strength stick is under the mouse (body, panel).
         std::optional<std::pair<std::size_t, std::size_t>> panelHit;
         const bool showStrengths = scene.plot.showPanelStrengths && !model.field.panelBodies.empty();
-        if (showStrengths && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake) {
+        if (showStrengths && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake && !m_drawingBody) {
             const ImVec2 mouse = ImGui::GetMousePos();
             float best = 0.6f * k_hitRadiusPx * uiScale();
-            double largest = 0.0;
-            for (const SourcePanels& body : model.field.panelBodies) {
-                for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
-            }
-            const float perUnit = largest > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(largest) : 0.0f;
+            const double scale = strengthScale(model.field);
+            const float perUnit = scale > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(scale) : 0.0f;
             for (std::size_t b = 0; b < model.field.panelBodies.size(); ++b) {
                 const SourcePanels& body = model.field.panelBodies[b];
                 for (std::size_t j = 0; j < body.size(); ++j) {
                     const ImVec2 base = toPixels(body.controlPoints[j]);
                     const ImVec2 out = normalized({static_cast<float>(body.normals[j].x), static_cast<float>(-body.normals[j].y)});
-                    const float d = distanceToSegment(mouse, base, base + out * (static_cast<float>(body.strengths[j]) * perUnit));
+                    const float d = distanceToSegment(mouse, base, base + out * stickLength(body.strengths[j], perUnit));
                     if (d < best) {
                         best = d;
                         panelHit = std::pair{b, j};
@@ -738,12 +824,19 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             return text;
         };
         if (showStrengths) {
-            const float perUnit = drawPanelStrengths(dl, model.field, panelHit);
-            if (perUnit > 0.0f) {
+            const double scale = strengthScale(model.field);
+            if (scale > 0.0) {
+                drawPanelStrengths(dl, model.field, k_strengthStickPx * uiScale() / static_cast<float>(scale), panelHit);
+                double largest = 0.0;
+                for (const SourcePanels& body : model.field.panelBodies) {
+                    for (const double lambda : body.strengths) largest = std::max(largest, std::abs(lambda));
+                }
                 const float s = uiScale();
-                const std::string caption = std::format(
-                    "Panel source strengths: the longest stick is λ = {:.4g}  (green: source λ > 0, red: sink λ < 0)",
-                    k_strengthStickPx * s / perUnit);
+                std::string caption = std::format("Panel source strengths: a full stick is λ = {:.4g}  (green: source λ > 0, red: "
+                                                  "sink λ < 0)", scale);
+                if (largest > k_strengthClip * scale) {
+                    caption += std::format("\nSticks ending in a bar are cut short; the largest is λ = {:.4g}", largest);
+                }
                 const ImVec2 textSize = ImGui::CalcTextSize(caption.c_str());
                 const ImVec2 at = plotPos + ImVec2(10.0f * s, result.pixelSize.y - textSize.y - 12.0f * s);
                 dl->AddRectFilled(at - ImVec2(6.0f * s, 3.0f * s), at + textSize + ImVec2(6.0f * s, 3.0f * s),
@@ -765,7 +858,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         }
 
         const bool hovered = ImPlot::IsPlotHovered();
-        const bool idle = hovered && !m_grab && !m_placingRake; // hover feedback and new grabs
+        const bool idle = hovered && !m_grab && !m_placingRake && !m_drawingBody; // hover feedback and new grabs
         const ImVec2 mouse = ImGui::GetMousePos();
         const Vec2 mouseWorld = toWorld(mouse);
         const float hitRadius = k_hitRadiusPx * uiScale();
@@ -804,7 +897,9 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
                 d = std::sqrt(offset.x * offset.x + offset.y * offset.y) * 0.5f; // generous target
             } else {
                 drawMarker(dl, element, result.limits, 1.0f);
-                d = hitDistance(element, mouse, result.limits);
+                const auto solved = std::ranges::find(model.field.panelBodies, i, &SourcePanels::element);
+                d = hitDistance(element, mouse, result.limits,
+                                solved != model.field.panelBodies.end() ? &*solved : nullptr);
             }
             if (idle && d < hitDist) {
                 hitDist = d;
@@ -858,6 +953,16 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         if (m_placingRake) {
             updateRakePlacement(mouseWorld, hovered, result.limits, plotHeightPx, result);
             const char* hint = "Drag across the plot to place a dye rake (or click for a vertical one). Esc cancels.";
+            const float s = uiScale();
+            const ImVec2 textSize = ImGui::CalcTextSize(hint);
+            const ImVec2 boxMin = plotPos + ImVec2(0.5f * (result.pixelSize.x - textSize.x) - 8.0f * s, 10.0f * s);
+            dl->AddRectFilled(boxMin, boxMin + textSize + ImVec2(16.0f * s, 8.0f * s), IM_COL32(15, 17, 24, 210), 4.0f * s);
+            dl->AddText(boxMin + ImVec2(8.0f * s, 4.0f * s), k_highlightColor, hint);
+        }
+        if (m_drawingBody) {
+            updateBodyDrawing(mouseWorld, hovered, result.limits, plotHeightPx, result);
+            const char* hint = "Click points around the body, or drag to sketch it. Click the first point (or Enter, or "
+                               "double-click) to close it. Backspace: undo a point. Esc: cancel.";
             const float s = uiScale();
             const ImVec2 textSize = ImGui::CalcTextSize(hint);
             const ImVec2 boxMin = plotPos + ImVec2(0.5f * (result.pixelSize.x - textSize.x) - 8.0f * s, 10.0f * s);

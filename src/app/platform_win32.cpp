@@ -23,6 +23,7 @@ namespace pfl {
 namespace {
 
 constexpr wchar_t k_sceneFilter[] = L"Flow scenes (*.json)\0*.json\0All files (*.*)\0*.*\0";
+constexpr wchar_t k_airfoilFilter[] = L"Airfoil coordinates (*.dat;*.txt)\0*.dat;*.txt\0All files (*.*)\0*.*\0";
 constexpr wchar_t k_pngFilter[] = L"PNG images (*.png)\0*.png\0All files (*.*)\0*.*\0";
 constexpr wchar_t k_csvFilter[] = L"CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0";
 constexpr wchar_t k_mp4Filter[] = L"MP4 videos (*.mp4)\0*.mp4\0All files (*.*)\0*.*\0";
@@ -138,6 +139,10 @@ CommandLine parseCommandLine() {
 }
 
 std::optional<std::filesystem::path> showOpenSceneDialog(GLFWwindow* owner) { return fileDialog(owner, false, {}); }
+
+std::optional<std::filesystem::path> showOpenAirfoilDialog(GLFWwindow* owner) {
+    return fileDialog(owner, false, {}, k_airfoilFilter, L"dat");
+}
 
 std::optional<std::filesystem::path> showSaveSceneDialog(GLFWwindow* owner, const std::filesystem::path& suggested) {
     return fileDialog(owner, true, suggested);

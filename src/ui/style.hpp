@@ -53,6 +53,9 @@ void drawVortexGlyph(ImDrawList* dl, ImVec2 centre, float radius, bool clockwise
 // arrow along -axis, the direction of Anderson's doublet arrow (sink to source).
 void drawDoubletGlyph(ImDrawList* dl, ImVec2 centre, float radius, ImVec2 axis, ImU32 colour);
 
+// Toolbar icon for drawing a source-panel body: a pencil finishing a closed outline.
+void drawOutlineToolIcon(ImDrawList* dl, ImVec2 centre, float size);
+
 // Toolbar icon for the dye rake tool: a rake with streaks trailing from it.
 void drawDyeRakeIcon(ImDrawList* dl, ImVec2 centre, float size);
 

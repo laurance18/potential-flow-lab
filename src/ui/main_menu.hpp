@@ -42,6 +42,7 @@ struct MainMenuActions {
     bool open = false;
     bool save = false;
     bool saveAs = false;
+    bool importAirfoil = false;
     bool undo = false;
     bool redo = false;
     bool exportImage = false;
