@@ -170,6 +170,25 @@ void drawOutlineToolIcon(ImDrawList* dl, ImVec2 c, float size) {
                       tip + dir * (0.25f * h) - side * (0.1f * h), wood);
 }
 
+void drawPlaceToolIcon(ImDrawList* dl, ImVec2 c, float size, bool on) {
+    const float s = uiScale();
+    const float h = 0.5f * size;
+    const ImU32 ring = on ? IM_COL32(255, 210, 90, 255) : IM_COL32(150, 152, 165, 255);
+    const ImVec2 o = c + ImVec2(-0.12f * h, -0.12f * h); // the crosshairs, up and left of the pointer
+    dl->AddCircle(o, 0.5f * h, ring, 0, 1.6f * s);
+    for (const ImVec2 dir : {ImVec2(1.0f, 0.0f), ImVec2(-1.0f, 0.0f), ImVec2(0.0f, 1.0f), ImVec2(0.0f, -1.0f)}) {
+        dl->AddLine(o + dir * (0.3f * h), o + dir * (0.75f * h), ring, 1.6f * s);
+    }
+    dl->AddCircleFilled(o, 0.1f * h, ring);
+    // A mouse pointer with its tip on the centre.
+    const ImVec2 tip = o;
+    const ImVec2 pts[] = {tip, tip + ImVec2(0.0f, 0.95f * h), tip + ImVec2(0.25f * h, 0.72f * h),
+                          tip + ImVec2(0.42f * h, 1.05f * h), tip + ImVec2(0.55f * h, 0.98f * h),
+                          tip + ImVec2(0.39f * h, 0.66f * h), tip + ImVec2(0.7f * h, 0.66f * h)};
+    dl->AddConcavePolyFilled(pts, 7, IM_COL32(235, 235, 240, 255));
+    dl->AddPolyline(pts, 7, IM_COL32(20, 20, 25, 255), ImDrawFlags_Closed, 1.2f * s);
+}
+
 void drawDyeRakeIcon(ImDrawList* dl, ImVec2 c, float size) {
     const float s = uiScale();
     const float h = 0.5f * size;

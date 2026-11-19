@@ -1,5 +1,6 @@
 #include "app/app.hpp"
 
+#include "app/gpu_monitor_win32.hpp"
 #include "app/platform_win32.hpp"
 #include "app/video_recorder.hpp"
 #include "core/dye.hpp"
@@ -83,6 +84,8 @@ constexpr double k_batchVideoSeconds = 6.0; // --export-video without --video-se
 
 // Sweep export: steps computed in each frame for at most this long, so the window stays responsive.
 constexpr double k_sweepFrameBudget = 0.03;
+// The frame rate in the menu bar is averaged over this long.
+constexpr double k_fpsWindow = 0.5;
 // A notice at the right end of the menu bar (a file saved) shows this long.
 constexpr double k_noticeSeconds = 6.0;
 
@@ -235,6 +238,8 @@ private:
     double animationTimeScale(const Rect& view) const;
     bool particlesVisible() const;
     StatusInfo statusInfo() const;
+    void updatePerformance();
+    std::optional<PerformanceStats> performanceStats() const;
 
     bool m_glfwReady = false;
     bool m_imguiReady = false;
@@ -258,6 +263,7 @@ private:
 
     // UI state.
     PlotView m_plotView;
+    bool m_clickToPlace = false; // toolbar switch: new elements are placed by clicking on the plot
     SurfacePanel m_surfacePanel;
     std::optional<Vec2> m_surfaceMarker; // surface point picked in the Cp panel (last frame)
     ParameterDialog m_dialog;
@@ -269,6 +275,13 @@ private:
     HelpWindow m_help;
     std::string m_notice;
     double m_noticeUntil = 0.0; // glfwGetTime() when the notice goes away
+    // View > Performance stats: frame rate over the last k_fpsWindow, and the GPU load (read only
+    // while shown).
+    bool m_showPerformance = true;
+    std::unique_ptr<GpuMonitor> m_gpuMonitor;
+    double m_fpsStart = 0.0;
+    int m_fpsFrames = 0;
+    double m_fps = 0.0;
     PlotViewResult m_plot; // plot geometry from the latest frame
     ImVec2 m_plotWindowPos{0.0f, 0.0f};  // the plot window (axes included), for image export
     ImVec2 m_plotWindowSize{0.0f, 0.0f};
@@ -555,8 +568,10 @@ void App::frame(double dt) {
         sceneEdited(true);
     }
 
+    updatePerformance();
     const MainMenuState menuState{.canReloadShaders = shaderHotReloadAvailable(),
                                   .parameterPanel = m_showParameters,
+                                  .performance = performanceStats(),
                                   .canUndo = m_history.canUndo() || m_uncommitted,
                                   .canRedo = m_history.canRedo() && !m_uncommitted,
                                   .recording = recordingProgress(),
@@ -570,9 +585,20 @@ void App::frame(double dt) {
     const float toolWidth = toolbarWidth();
     const float bodyHeight = std::max(workSize.y - statusHeight, 1.0f);
 
-    const ToolbarAction tool =
-        drawToolbar(workPos, ImVec2(toolWidth, bodyHeight), m_plotView.placingRake(), m_plotView.drawingBody());
-    if (tool.element) m_dialog.openNew(defaultElement(*tool.element, newElementPosition(m_scene.plot.view)));
+    const ToolbarAction tool = drawToolbar(workPos, ImVec2(toolWidth, bodyHeight),
+                                           {.clickToPlace = m_clickToPlace,
+                                            .placing = m_plotView.placing(),
+                                            .placingRake = m_plotView.placingRake(),
+                                            .drawingBody = m_plotView.drawingBody()});
+    if (tool.toggleClickToPlace) {
+        m_clickToPlace = !m_clickToPlace;
+        if (!m_clickToPlace) m_plotView.cancelPlacement();
+    }
+    if (tool.element) {
+        // A uniform flow has no position to click.
+        if (m_clickToPlace && *tool.element != ElementKind::Uniform) m_plotView.togglePlacement(*tool.element);
+        else m_dialog.openNew(defaultElement(*tool.element, newElementPosition(m_scene.plot.view)));
+    }
     if (tool.placeRake) m_plotView.toggleRakePlacement();
     if (tool.drawBody) m_plotView.toggleBodyDrawing();
 
@@ -622,6 +648,7 @@ void App::frame(double dt) {
         sceneEdited(true);
     }
     if (m_plot.drawnOutline) m_dialog.openNew(drawnBody(std::move(*m_plot.drawnOutline)));
+    if (m_plot.placed) m_dialog.openNew(defaultElement(m_plot.placed->kind, m_plot.placed->position));
     if (m_plot.rakeChange) applyRakeChange(*m_plot.rakeChange);
     if (m_plot.rakeRemove) removeRake(*m_plot.rakeRemove);
     if (m_plot.dividingAdd) {
@@ -686,6 +713,31 @@ void App::frame(double dt) {
     runBatchStep();
 }
 
+void App::updatePerformance() {
+    if (m_showPerformance && !m_commandLine.batch() && !m_gpuMonitor) m_gpuMonitor = std::make_unique<GpuMonitor>();
+    const double now = glfwGetTime();
+    ++m_fpsFrames;
+    if (now - m_fpsStart >= k_fpsWindow) {
+        m_fps = m_fpsStart > 0.0 ? m_fpsFrames / (now - m_fpsStart) : 0.0;
+        m_fpsStart = now;
+        m_fpsFrames = 0;
+    }
+}
+
+std::optional<PerformanceStats> App::performanceStats() const {
+    // Not in command-line exports: nothing is watching, and the counters take a moment to start.
+    if (!m_showPerformance || m_commandLine.batch()) return std::nullopt;
+    PerformanceStats stats{.fps = m_fps, .frameMs = m_fps > 0.0 ? 1000.0 / m_fps : 0.0};
+    if (m_gpuMonitor) {
+        if (const std::optional<GpuReading> gpu = m_gpuMonitor->latest()) {
+            stats.gpuPercent = gpu->totalPercent;
+            stats.gpuAppPercent = gpu->processPercent;
+            if (gpu->processMemoryMB > 0.0) stats.gpuMemoryMB = gpu->processMemoryMB;
+        }
+    }
+    return stats;
+}
+
 void App::handleMenu(const MainMenuActions& actions) {
     if (actions.quit) request(DiscardingAction::Quit);
     if (actions.newScene) request(DiscardingAction::New);
@@ -707,6 +759,10 @@ void App::handleMenu(const MainMenuActions& actions) {
     if (actions.toggleParameterPanel) {
         m_showParameters = !m_showParameters;
         if (!m_showParameters && !m_recording) m_parameterPanel.stop();
+    }
+    if (actions.togglePerformance) {
+        m_showPerformance = !m_showPerformance;
+        if (!m_showPerformance) m_gpuMonitor.reset();
     }
     if (actions.verify) m_verification.open();
     if (actions.helpGuide) m_help.openGuide();

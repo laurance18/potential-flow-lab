@@ -681,6 +681,7 @@ void PlotView::toggleRakePlacement() {
     m_rakeStart.reset();
     m_drawingBody = false;
     m_outline.clear();
+    m_placing.reset();
 }
 
 void PlotView::toggleBodyDrawing() {
@@ -688,6 +689,42 @@ void PlotView::toggleBodyDrawing() {
     m_outline.clear();
     m_placingRake = false;
     m_rakeStart.reset();
+    m_placing.reset();
+}
+
+void PlotView::togglePlacement(ElementKind kind) {
+    m_placing = m_placing == kind ? std::nullopt : std::optional(kind);
+    m_placingRake = false;
+    m_rakeStart.reset();
+    m_drawingBody = false;
+    m_outline.clear();
+}
+
+void PlotView::updatePlacement(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        m_placing.reset();
+        return;
+    }
+    if (!hovered) return;
+    const Vec2 point = snapped(mouseWorld, limits, heightPx, ImGui::GetIO().KeyShift);
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        result.placed = ElementPlacement{*m_placing, point};
+        m_placing.reset();
+        return;
+    }
+    // The new element's marker where it would go, with its coordinates.
+    const float s = uiScale();
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    drawMarker(dl, defaultElement(*m_placing, point), limits, 0.75f);
+    const ImVec2 at = toPixels(point);
+    dl->AddCircle(at, 11.0f * s, k_highlightColor, 0, 1.5f * s);
+    const std::string label = std::format("({:.4g}, {:.4g})", point.x + 0.0, point.y + 0.0);
+    const ImVec2 textPos = at + ImVec2(14.0f * s, 8.0f * s);
+    const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+    dl->AddRectFilled(textPos - ImVec2(4.0f * s, 2.0f * s), textPos + textSize + ImVec2(4.0f * s, 2.0f * s),
+                      IM_COL32(15, 17, 24, 210), 3.0f * s);
+    dl->AddText(textPos, k_highlightColor, label.c_str());
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 }
 
 void PlotView::updateBodyDrawing(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result) {
@@ -838,7 +875,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
     // decision uses last frame's hover, since ImPlot handles the press inside BeginPlot.
     ImPlotInputMap& input = ImPlot::GetInputMap();
     const int panMod = input.PanMod;
-    if (m_grab || m_grabbableHovered || m_placingRake || m_drawingBody) input.PanMod = k_noPan;
+    if (m_grab || m_grabbableHovered || toolActive()) input.PanMod = k_noPan;
 
     constexpr ImPlotFlags plotFlags = ImPlotFlags_Equal | ImPlotFlags_NoTitle | ImPlotFlags_NoLegend |
                                       ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
@@ -888,7 +925,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         const bool showSheetStrengths = scene.plot.showPanelStrengths && !model.field.vortexSheets.empty();
         const double sheetScale = showSheetStrengths ? sheetStrengthScale(model.field) : 0.0;
         const float sheetPerUnit = sheetScale > 0.0 ? k_strengthStickPx * uiScale() / static_cast<float>(sheetScale) : 0.0f;
-        if ((showStrengths || showSheetStrengths) && ImPlot::IsPlotHovered() && !m_grab && !m_placingRake && !m_drawingBody) {
+        if ((showStrengths || showSheetStrengths) && ImPlot::IsPlotHovered() && !m_grab && !toolActive()) {
             const ImVec2 mouse = ImGui::GetMousePos();
             float best = 0.6f * k_hitRadiusPx * uiScale();
             const double scale = showStrengths ? strengthScale(model.field) : 0.0;
@@ -1005,7 +1042,7 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
         }
 
         const bool hovered = ImPlot::IsPlotHovered();
-        const bool idle = hovered && !m_grab && !m_placingRake && !m_drawingBody; // hover feedback and new grabs
+        const bool idle = hovered && !m_grab && !toolActive(); // hover feedback and new grabs
         const ImVec2 mouse = ImGui::GetMousePos();
         const Vec2 mouseWorld = toWorld(mouse);
         const float hitRadius = k_hitRadiusPx * uiScale();
@@ -1105,6 +1142,16 @@ PlotViewResult PlotView::draw(ImVec2 pos, ImVec2 size, const Scene& scene, const
             const ImVec2 boxMin = plotPos + ImVec2(0.5f * (result.pixelSize.x - textSize.x) - 8.0f * s, 10.0f * s);
             dl->AddRectFilled(boxMin, boxMin + textSize + ImVec2(16.0f * s, 8.0f * s), IM_COL32(15, 17, 24, 210), 4.0f * s);
             dl->AddText(boxMin + ImVec2(8.0f * s, 4.0f * s), k_highlightColor, hint);
+        }
+        if (m_placing) {
+            const std::string hint = std::format("Click on the plot to place the {} (Shift snaps to a grid). Esc cancels.",
+                                                 kindName(*m_placing));
+            const float s = uiScale();
+            const ImVec2 textSize = ImGui::CalcTextSize(hint.c_str());
+            const ImVec2 boxMin = plotPos + ImVec2(0.5f * (result.pixelSize.x - textSize.x) - 8.0f * s, 10.0f * s);
+            dl->AddRectFilled(boxMin, boxMin + textSize + ImVec2(16.0f * s, 8.0f * s), IM_COL32(15, 17, 24, 210), 4.0f * s);
+            dl->AddText(boxMin + ImVec2(8.0f * s, 4.0f * s), k_highlightColor, hint.c_str());
+            updatePlacement(mouseWorld, hovered, result.limits, plotHeightPx, result);
         }
         if (m_drawingBody) {
             updateBodyDrawing(mouseWorld, hovered, result.limits, plotHeightPx, result);

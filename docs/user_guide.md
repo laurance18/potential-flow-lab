@@ -15,7 +15,7 @@ The window has four parts:
 
 | Part | What it does |
 |---|---|
-| Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below the source-panel body, the pencil that draws one, then the vortex-sheet airfoil. At the bottom, the dye rake tool. |
+| Toolbar (left) | At the top, the **click-to-place** switch (crosshairs). Below it one icon per element type. Hover for its name, click to add one. Below the source-panel body, the pencil that draws one, then the vortex-sheet airfoil. At the bottom, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
 | Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View**, **Verify** and **Help** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
@@ -43,6 +43,10 @@ The window has four parts:
   The lines follow the point through drags, sliders, sweeps and pans, and go away with it if it
   disappears. The selection is not saved with the scene and is not part of the undo history.
 - Regions outside a sector flow's wedge are darkened: the flow is not defined there.
+- The right end of the menu bar shows the **frame rate** (green at 55 FPS and above, yellow from
+  30, red below), the frame time, the **GPU load** of the whole graphics card as Task Manager shows
+  it, with this program's share in brackets, and the video memory the program uses. VSync caps the
+  frame rate at the monitor's refresh rate. **View → Performance stats** (Ctrl+Shift+F) hides it.
 
 ## Adding flow elements
 
@@ -51,6 +55,13 @@ Click a toolbar icon. A dialog opens with default values; change them and press 
 measured counter-clockwise from +x. If a value is invalid, Apply is disabled and the dialog says
 why; if the result is legal but noteworthy (for example two singularities at the same point) a
 yellow warning appears before you apply.
+
+**Click to place.** The crosshairs button at the top of the toolbar switches it on or off (off at
+start). While it is on, choosing an element shows its marker under the mouse with its coordinates;
+click on the plot where it should go (hold Shift to snap to a grid) and the dialog opens with that
+position filled in. The position can still be typed over there, and every other parameter is set
+as usual. Esc, or clicking the same icon again, cancels. A uniform flow has no position, so its
+dialog always opens at once.
 
 | Element | Parameters | Sign convention |
 |---|---|---|

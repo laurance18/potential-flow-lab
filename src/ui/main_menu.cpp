@@ -5,7 +5,9 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <format>
+#include <string>
 
 namespace pfl {
 namespace {
@@ -31,11 +33,15 @@ void drawExamplesMenu(MainMenuActions& actions) {
     ImGui::EndMenu();
 }
 
-void drawViewMenu(PlotSettings& plot, bool parameterPanel, MainMenuActions& actions) {
+void drawViewMenu(PlotSettings& plot, const MainMenuState& state, MainMenuActions& actions) {
     if (!ImGui::BeginMenu("View")) return;
-    if (ImGui::MenuItem("Parameters", "Ctrl+P", parameterPanel)) actions.toggleParameterPanel = true;
+    if (ImGui::MenuItem("Parameters", "Ctrl+P", state.parameterPanel)) actions.toggleParameterPanel = true;
     ImGui::SetItemTooltip("A panel with a live slider for every element parameter, and the parameter sweep\n"
                           "(animate one parameter, or export the stagnation points and forces along it).");
+    if (ImGui::MenuItem("Performance stats", "Ctrl+Shift+F", state.performance.has_value())) {
+        actions.togglePerformance = true;
+    }
+    ImGui::SetItemTooltip("Frame rate, frame time and GPU load at the right end of the menu bar.");
     if (ImGui::MenuItem("Reset view")) actions.resetView = true;
     ImGui::SetItemTooltip("Show the default region -4 < x < 4, -2.5 < y < 2.5.\n"
                           "Scroll to zoom and drag to pan the plot.");
@@ -109,14 +115,51 @@ void drawHelpMenu(MainMenuActions& actions) {
     ImGui::EndMenu();
 }
 
-// Right end of the menu bar: the recording in progress, or the notice.
+ImVec4 fpsColour(double fps) {
+    if (fps >= 55.0) return ImVec4(0.45f, 0.85f, 0.45f, 1.0f);
+    if (fps >= 30.0) return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
+    return ImVec4(0.95f, 0.40f, 0.35f, 1.0f);
+}
+
+// The performance readout: the frame rate (coloured by how smooth it is), then the rest.
+struct PerformanceText {
+    std::string fps;
+    std::string rest;
+};
+
+PerformanceText performanceText(const PerformanceStats& perf) {
+    PerformanceText text{.fps = std::format("{:.0f} FPS", perf.fps), .rest = std::format("{:.1f} ms", perf.frameMs)};
+    if (perf.gpuPercent) {
+        text.rest += std::format("   GPU {:.0f}%", *perf.gpuPercent);
+        if (perf.gpuAppPercent) text.rest += std::format(" (app {:.0f}%)", *perf.gpuAppPercent);
+    }
+    if (perf.gpuMemoryMB) text.rest += std::format("   VRAM {:.0f} MB", *perf.gpuMemoryMB);
+    return text;
+}
+
+// Right end of the menu bar: the performance readout, and left of it the recording in progress or
+// the notice.
 void drawMenuBarStatus(const MainMenuState& state, MainMenuActions& actions) {
     const ImGuiStyle& style = ImGui::GetStyle();
+    // The readout's width only grows, so the numbers changing do not make it (and the notice) jitter.
+    static float performanceWidth = 0.0f;
+    PerformanceText perfText;
+    float right = ImGui::GetWindowWidth();
+    if (state.performance) {
+        perfText = performanceText(*state.performance);
+        const float width = ImGui::CalcTextSize(perfText.fps.c_str()).x + ImGui::CalcTextSize(perfText.rest.c_str()).x +
+                            3.0f * style.ItemSpacing.x;
+        performanceWidth = std::max(performanceWidth, width);
+        right -= performanceWidth;
+    } else {
+        performanceWidth = 0.0f;
+    }
+
     if (state.recording) {
         const std::string text = std::format("Recording  {:.1f} / {:.1f} s", state.recording->seconds, state.recording->total);
         const float width = ImGui::GetFontSize() + ImGui::CalcTextSize(text.c_str()).x + ImGui::CalcTextSize("Stop").x +
                             2.0f * style.FramePadding.x + 3.0f * style.ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width);
+        ImGui::SetCursorPosX(right - width);
         // A red dot, like a camera's.
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float r = 0.3f * ImGui::GetFontSize();
@@ -128,8 +171,24 @@ void drawMenuBarStatus(const MainMenuState& state, MainMenuActions& actions) {
         ImGui::SetItemTooltip("Stop now and keep what has been recorded.");
     } else if (!state.notice.empty()) {
         const float width = ImGui::CalcTextSize(state.notice.c_str()).x + 2.0f * style.ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - width);
+        ImGui::SetCursorPosX(right - width);
         ImGui::TextDisabled("%s", state.notice.c_str());
+    }
+
+    if (state.performance) {
+        ImGui::SetCursorPosX(right);
+        ImGui::BeginGroup();
+        ImGui::TextColored(fpsColour(state.performance->fps), "%s", perfText.fps.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", perfText.rest.c_str());
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Frames drawn per second (VSync caps it at the monitor's refresh rate) and the time\n"
+                              "between frames. GPU: the busiest engine of the graphics card over the last second,\n"
+                              "all programs together, as Task Manager shows it, with this program's share in\n"
+                              "brackets. VRAM: the dedicated video memory this program uses.\n"
+                              "View > Performance stats (Ctrl+Shift+F) hides this.");
+        }
     }
 }
 
@@ -145,6 +204,7 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, route)) actions.saveAs = true;
     if (canReloadShaders && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, route)) actions.reloadShaders = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, route)) actions.toggleParameterPanel = true;
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F, route)) actions.togglePerformance = true;
     if (ImGui::Shortcut(ImGuiKey_F5, route)) actions.verify = true;
     if (ImGui::Shortcut(ImGuiKey_F1, route)) actions.helpGuide = true;
     // Not while a dialog or menu is open; a text field being edited takes Ctrl+Z for itself.
@@ -198,7 +258,7 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
         drawEditMenu(state, actions);
         drawExamplesMenu(actions);
         actions.elements = drawElementsMenu(scene);
-        drawViewMenu(plot, state.parameterPanel, actions);
+        drawViewMenu(plot, state, actions);
         drawVerifyMenu(actions);
         drawHelpMenu(actions);
         drawMenuBarStatus(state, actions);

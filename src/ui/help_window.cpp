@@ -742,6 +742,7 @@ void HelpWindow::drawShortcuts() {
     };
     static constexpr std::pair<const char*, const char*> k_windows[] = {
         {"Ctrl+P", "Parameters panel (live sliders and the sweep)"},
+        {"Ctrl+Shift+F", "Performance stats (frame rate, GPU load) in the menu bar"},
         {"F5", "Physics checks"},
         {"F1", "This user guide; Esc closes a help window"},
     };
@@ -754,6 +755,7 @@ void HelpWindow::drawShortcuts() {
         {"Shift while dragging", "Snap the position to a grid"},
         {"Esc while dragging", "Put the element back"},
         {"Click a stagnation point", "Show or hide its dividing streamlines"},
+        {"Click to place on, element tool, click", "Place a new element there (Shift snaps, Esc cancels)"},
     };
     static constexpr std::pair<const char*, const char*> k_rakes[] = {
         {"Rake tool, then drag", "Draw a dye rake (a click places a vertical one)"},

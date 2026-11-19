@@ -9,8 +9,8 @@
 // density, arrows, wall images, equipotentials, |V| or Cp background, surface pressure, stagnation
 // points, particles), edited in place. Verify: the physics checks (verification_window.hpp), F5.
 // Help: the user guide (F1), the sign conventions, the keyboard shortcuts and About (help_window.hpp).
-// At the right end of the bar: the recording in progress with
-// a Stop button, or a short notice (e.g. the file just saved).
+// At the right end of the bar: the frame rate and GPU load (View → Performance stats), and left
+// of it the recording in progress with a Stop button, or a short notice (e.g. the file just saved).
 #pragma once
 
 #include "core/scene.hpp"
@@ -27,10 +27,20 @@ struct RecordingProgress {
     double total = 0.0;
 };
 
+// The performance readout at the right end of the bar (View → Performance stats).
+struct PerformanceStats {
+    double fps = 0.0;
+    double frameMs = 0.0;
+    std::optional<double> gpuPercent;     // the whole GPU, as in Task Manager
+    std::optional<double> gpuAppPercent;  // this program's share
+    std::optional<double> gpuMemoryMB;    // dedicated video memory this program uses
+};
+
 // What the menus show besides the scene.
 struct MainMenuState {
     bool canReloadShaders = false; // Debug builds reading shaders from disk (Ctrl+R)
     bool parameterPanel = false;   // View → Parameters is ticked
+    std::optional<PerformanceStats> performance; // shown when View → Performance stats is ticked
     bool canUndo = false;
     bool canRedo = false;
     std::optional<RecordingProgress> recording;
@@ -52,6 +62,7 @@ struct MainMenuActions {
     bool record = false;
     bool stopRecording = false;
     bool toggleParameterPanel = false;
+    bool togglePerformance = false;
     bool verify = false; // open the physics checks
     bool helpGuide = false; // Help menu: open the user guide (F1), ...
     bool helpConventions = false;

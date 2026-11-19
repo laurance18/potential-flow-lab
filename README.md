@@ -12,7 +12,8 @@ parallel, with the same results as on one core, and panel bodies are summed by g
 series near them.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
-  with Apply / Cancel. Below them, the dye rake tool.
+  with Apply / Cancel. With the **click-to-place** switch at its top on, you click the element's
+  position on the plot first. Below them, the dye rake tool.
 - Main plot: labelled (x, y) axes, scroll to zoom, drag to pan; streamlines are recomputed after
   every add, edit or delete. Hover an element to name it, double-click it to edit it, or **drag it**
   to move it: the streamlines, contours, stagnation points and body surfaces follow live while the
@@ -126,7 +127,7 @@ the embedded copies too, configure with `-DPFL_SHADERS_FROM_DISK=OFF`.
 ## Packaging for distribution
 
 ```powershell
-cmake --build --preset release --target dist
+So
 ```
 
 This produces `dist\PotentialFlowLab.zip`, containing `PotentialFlowLab.exe` and `README.txt`.

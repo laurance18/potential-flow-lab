@@ -6,10 +6,11 @@ add_executable(PotentialFlowLab
     main.cpp
     app.hpp app.cpp
     platform_win32.hpp platform_win32.cpp
+    gpu_monitor_win32.hpp gpu_monitor_win32.cpp
     mp4_writer_win32.hpp mp4_writer_win32.cpp
     video_recorder.hpp video_recorder.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
-target_link_libraries(PotentialFlowLab PRIVATE pfl_core pfl_render pfl_ui pfl_io pfl_imgui glfw comdlg32 ole32 windowscodecs
+target_link_libraries(PotentialFlowLab PRIVATE pfl_core pfl_render pfl_ui pfl_io pfl_imgui glfw comdlg32 ole32 windowscodecs pdh
                                                mfplat mfreadwrite mfuuid delayimp)
 pfl_set_warnings(PotentialFlowLab)
 

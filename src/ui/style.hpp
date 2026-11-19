@@ -57,6 +57,9 @@ void drawDoubletGlyph(ImDrawList* dl, ImVec2 centre, float radius, ImVec2 axis, 
 // Toolbar icon for drawing a source-panel body: a pencil finishing a closed outline.
 void drawOutlineToolIcon(ImDrawList* dl, ImVec2 centre, float size);
 
+// Toolbar icon for the click-to-place switch: crosshairs with a pointer on them, lit when `on`.
+void drawPlaceToolIcon(ImDrawList* dl, ImVec2 centre, float size, bool on);
+
 // Toolbar icon for the dye rake tool: a rake with streaks trailing from it.
 void drawDyeRakeIcon(ImDrawList* dl, ImVec2 centre, float size);
 

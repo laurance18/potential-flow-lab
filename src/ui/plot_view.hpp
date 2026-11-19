@@ -16,7 +16,9 @@
 // Clicking a stagnation point shows or hides its dividing streamlines, which are drawn above the dye.
 // After the toolbar's outline tool, clicks on the plot place the points of a new body's outline (a
 // drag sketches it freehand); clicking the first point again, Enter or a double-click closes it,
-// Backspace takes back the last point and Esc gives up.
+// Backspace takes back the last point and Esc gives up. With the toolbar's click-to-place option on,
+// choosing an element tool shows its marker under the mouse; a click on the plot places it there
+// (Shift snaps to a grid) and Esc gives up.
 #pragma once
 
 #include "core/flow_field.hpp"
@@ -83,6 +85,12 @@ struct ElementMove {
     Vec2 position; // new anchor point (see anchorPoint())
 };
 
+// A click on the plot while placing an element: a new element of `kind` at `position`.
+struct ElementPlacement {
+    ElementKind kind;
+    Vec2 position;
+};
+
 struct RakeChange {
     std::optional<std::size_t> index; // rake to replace; nullopt adds a new one
     DyeRake rake;
@@ -97,6 +105,7 @@ struct PlotViewResult {
     std::optional<RakeChange> rakeChange; // a rake placed, dragged or edited this frame
     std::optional<std::size_t> rakeRemove;
     std::optional<std::vector<Vec2>> drawnOutline; // an outline just closed, for a new panel body
+    std::optional<ElementPlacement> placed;        // a new element's position just clicked
     std::optional<Vec2> dividingAdd;           // a stagnation point clicked to show its dividing streamlines
     std::optional<std::size_t> dividingRemove; // index in PlotLayers::dividingPoints, clicked to hide them
     bool dragging = false;                // an element or a rake is being dragged
@@ -115,6 +124,12 @@ public:
     void toggleBodyDrawing();
     bool drawingBody() const { return m_drawingBody; }
 
+    // Starts placing a new element of `kind` with a click (or cancels it, if that kind is already
+    // being placed). `kind` must have a position: not a uniform flow.
+    void togglePlacement(ElementKind kind);
+    void cancelPlacement() { m_placing.reset(); }
+    std::optional<ElementKind> placing() const { return m_placing; }
+
     PlotViewResult draw(ImVec2 pos, ImVec2 size, const Scene& scene, const FlowModel& model, const PlotLayers& layers);
 
 private:
@@ -131,6 +146,9 @@ private:
     void updateGrab(const Scene& scene, Vec2 mouseWorld, const Rect& limits, float heightPx, PlotViewResult& result);
     void updateRakePlacement(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result);
     void updateBodyDrawing(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result);
+    void updatePlacement(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result);
+    // A tool is using the mouse on the plot (placing a rake or an element, drawing an outline).
+    bool toolActive() const { return m_placingRake || m_drawingBody || m_placing.has_value(); }
 
     std::optional<Rect> m_pendingView;
     std::optional<Grab> m_grab;
@@ -139,6 +157,7 @@ private:
     std::optional<Vec2> m_rakeStart;       // while a new rake is being drawn
     bool m_drawingBody = false;
     std::vector<Vec2> m_outline;           // the points of the outline being drawn
+    std::optional<ElementKind> m_placing;  // the kind of element being placed with a click
     std::optional<std::size_t> m_rakeMenu; // rake whose right-click menu is open
 };
 
