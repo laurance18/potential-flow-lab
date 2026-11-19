@@ -127,7 +127,7 @@ the embedded copies too, configure with `-DPFL_SHADERS_FROM_DISK=OFF`.
 ## Packaging for distribution
 
 ```powershell
-So
+cmake --build --preset release --target dist
 ```
 
 This produces `dist\PotentialFlowLab.zip`, containing `PotentialFlowLab.exe` and `README.txt`.
