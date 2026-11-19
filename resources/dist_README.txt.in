@@ -17,23 +17,29 @@ IF WINDOWS SHOWS "Windows protected your PC"
 
 CONTROLS
   - Left toolbar: click an icon to add a uniform flow, source/sink, vortex,
-    doublet, sector flow or symmetry wall; enter its parameters and press Apply.
-    Below them, the dye rake tool: drag a line across the plot to release dye.
+    doublet, sector flow or symmetry wall, a source-panel body (ellipse,
+    rectangle or NACA 4-digit airfoil) or a vortex-sheet thin airfoil (flat
+    plate, NACA mean line or circular arc); enter its parameters and press
+    Apply. The pencil tool draws your own body outline. Below them, the dye
+    rake tool: drag a line across the plot to release dye.
   - Plot: scroll to zoom, drag to pan. Hover an element to see it, double-click
     it to edit it, drag it to move it. Click a stagnation point to show its
     dividing streamlines.
   - Edit menu: Undo (Ctrl+Z) and Redo (Ctrl+Y or Ctrl+Shift+Z).
   - Examples menu: ready-made scenes (cylinder, lifting cylinder, Rankine
-    oval and half-body, source near a wall, corner flow, ...). One click
+    oval and half-body, source near a wall, corner flow, source-panel bodies,
+    thin airfoils, ...). One click
     loads the scene; Save stores your own copy.
   - Elements menu: edit or delete any element.
   - File menu: New, Open, Save, Save As (scene files are JSON), Clear All,
-    and exports: PNG image of the plot, CSV field data, CSV streamlines,
+    Import airfoil coordinates (.dat, Selig or Lednicer layout), and exports: PNG image of the plot, CSV field data, CSV streamlines,
     CSV surface Cp, and Record animation (MP4 video or animated GIF).
   - View menu: the Parameters panel (Ctrl+P; live sliders for every element
     and a parameter sweep with CSV export), streamline density, arrows, wall
     images, equipotential lines, a |V| or Cp background, surface pressure
-    (Cp on the bodies, lift and drag), stagnation points, tracer particles.
+    (Cp on the bodies, lift and drag; on a thin airfoil, its loading against
+    thin-airfoil theory), stagnation points, panel strengths (λ on the panels,
+    γ along an airfoil), tracer particles.
   - Verify menu (F5): checks that compare the program with exact results,
     each with its error against its tolerance.
   - Help menu: the user guide (F1), sign conventions, keyboard shortcuts and
