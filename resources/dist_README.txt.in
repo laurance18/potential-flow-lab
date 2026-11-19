@@ -20,8 +20,10 @@ CONTROLS
     doublet, sector flow or symmetry wall, a source-panel body (ellipse,
     rectangle or NACA 4-digit airfoil) or a vortex-sheet thin airfoil (flat
     plate, NACA mean line or circular arc); enter its parameters and press
-    Apply. The pencil tool draws your own body outline. Below them, the dye
-    rake tool: drag a line across the plot to release dye.
+    Apply. With the click-to-place switch at the top of the toolbar on, you
+    first click where the element goes on the plot (Shift snaps to a grid,
+    Esc cancels). The pencil tool draws your own body outline. Below them, the
+    dye rake tool: drag a line across the plot to release dye.
   - Plot: scroll to zoom, drag to pan. Hover an element to see it, double-click
     it to edit it, drag it to move it. Click a stagnation point to show its
     dividing streamlines.
@@ -39,7 +41,9 @@ CONTROLS
     images, equipotential lines, a |V| or Cp background, surface pressure
     (Cp on the bodies, lift and drag; on a thin airfoil, its loading against
     thin-airfoil theory), stagnation points, panel strengths (λ on the panels,
-    γ along an airfoil), tracer particles.
+    γ along an airfoil), tracer particles, and the performance stats
+    (Ctrl+Shift+F; frame rate, frame time, GPU load and video memory at the
+    right end of the menu bar).
   - Verify menu (F5): checks that compare the program with exact results,
     each with its error against its tolerance.
   - Help menu: the user guide (F1), sign conventions, keyboard shortcuts and
