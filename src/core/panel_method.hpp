@@ -22,11 +22,14 @@
 //     F(z) = (1 / 2 pi) sum_k c_k (z - v_k) log((z - v_k) / (z - z_c)) + (Q / 2 pi) log(z - z_c),
 // with Q = sum lambda_j L_j the net source strength of the body (zero for the exact solution of a
 // closed body; the panels get close to it, which the Verify checks measure).
-// Far from the body (more than twice its radius from z_c) W is summed as its Laurent series in
-// 1 / (z - z_c), to full double precision but much faster than N logarithms.
-//
 // That needs every vertex to see the centre from inside the body (a star-shaped body: convex ones,
-// airfoils); other bodies sum the panels one by one (SourcePanels::starShaped).
+// airfoils); other bodies' potentials sum the panels one by one (SourcePanels::starShaped).
+//
+// The velocity, which is single-valued, is summed panel by panel, each logarithm cut along its own
+// panel only. Far from the body (more than twice its radius from z_c) it is summed as its Laurent
+// series in 1 / (z - z_c) instead, and nearer in each group of 16 panels uses a series of its own
+// where the point is far enough from it (panel_expansion.hpp): full double precision either way, and
+// much faster than N logarithms.
 //
 // Inside the body the field is not physical (the panel sheets make their own interior flow), so
 // the flow domain excludes it (FlowField::inDomain), and the plot fills it in.
@@ -37,6 +40,7 @@
 #pragma once
 
 #include "core/flow_element.hpp"
+#include "core/panel_expansion.hpp"
 #include "core/vec2.hpp"
 #include "core/vortex_sheet.hpp"
 
@@ -126,7 +130,8 @@ struct SourcePanels {
     bool starShaped = true;
     std::vector<Complex> panelWeights;
     std::vector<Complex> vertexWeights; // c_k
-    std::vector<Complex> laurent;       // a_m, m = 1 .. M: W = sum a_m / (z - z_c)^m beyond 2 radius
+    std::vector<Complex> laurent;       // a_m / radius^m, m = 1 .. M: W = sum a_m / (z - z_c)^m beyond 2 radius
+    std::vector<PanelCluster> clusters; // groups of panels with series of their own, for nearer points
     double netSource = 0.0;             // Q = sum lambda_j L_j
 
     std::size_t size() const { return vertices.size(); }

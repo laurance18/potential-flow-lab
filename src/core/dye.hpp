@@ -15,8 +15,12 @@
 // broken where its points have died. A streak stays fed by the same emitter index from step to step, so moving a rake drags
 // its dye along; detach() cuts every streak loose (after rakes are added or removed, or their
 // emitter count changes), and detached streaks drift away until their points die.
+//
+// The dye already released moves on every core, each point on its own; new releases follow on the
+// calling thread. The callables must be safe to call from several threads at once.
 #pragma once
 
+#include "core/parallel.hpp"
 #include "core/particles.hpp"
 #include "core/vec2.hpp"
 
@@ -96,7 +100,10 @@ private:
     std::vector<DyeStreak> m_streaks; // attached ones first, in emitter order
     std::size_t m_attached = 0;
     double m_sinceRelease = 0.0;
+    std::vector<DyePoint*> m_moving; // the living points, during step()
 };
+
+inline constexpr std::size_t k_dyeGrain = 128; // dye points per range of the parallel loop
 
 template <typename VelocityFn, typename ValidFn>
 void DyeSystem::step(double dt, std::span<const DyeEmitter> emitters, const VelocityFn& velocity,
@@ -110,14 +117,20 @@ void DyeSystem::step(double dt, std::span<const DyeEmitter> emitters, const Velo
                p.age <= s.maxAge && isValid(p.pos);
     };
 
-    // Existing points.
+    // Existing points, on every core: each moves on its own.
+    m_moving.clear();
     for (DyeStreak& streak : m_streaks) {
         for (DyePoint& p : streak.points) {
-            if (!p.alive) continue;
+            if (p.alive) m_moving.push_back(&p);
+        }
+    }
+    parallelFor(m_moving.size(), k_dyeGrain, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            DyePoint& p = *m_moving[i];
             p.age += dt;
             p.alive = move(p, dt);
         }
-    }
+    });
 
     // One attached streak per emitter, in order. Extra attached streaks (fewer emitters than last
     // step) are cut loose.

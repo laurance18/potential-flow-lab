@@ -23,6 +23,11 @@
 // room, so the same line stays; lines appear or vanish mostly where the flow stretches or really
 // changes shape. Each seed is recorded near the middle of its line, away from the ends. Arrows are placed at fixed arc-length steps from the line's seed, with
 // an offset kept with the seed, so they move with their line instead of jumping along it.
+//
+// The lines through the kept seeds are traced ahead of time on every core (core/parallel.hpp), each
+// as if the others were not there, and then cut where the lines accepted before it stop it: the
+// picture is exactly the one tracing them one at a time gives, three to four times faster near panel
+// bodies. The gaps are filled one seed at a time.
 #pragma once
 
 #include "core/flow_field.hpp"

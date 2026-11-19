@@ -6,7 +6,10 @@ sector flow) and straight symmetry walls, solves bodies of any shape with the so
 method (ellipses, rectangles, NACA 4-digit airfoils, outlines drawn on the plot or imported from
 airfoil coordinate files), models thin airfoils as a vortex sheet on the camber line with the Kutta
 condition (thin-airfoil theory), draws evenly spaced streamlines with direction arrows, equipotential
-lines and velocity-magnitude contours, and animates tracer particles on the GPU.
+lines and velocity-magnitude contours, and animates tracer particles (stepped on every CPU core,
+drawn on the GPU). Particles, dye, contours, stagnation points and the live streamlines all run in
+parallel, with the same results as on one core, and panel bodies are summed by grouped far-field
+series near them.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
   with Apply / Cancel. Below them, the dye rake tool.

@@ -15,8 +15,6 @@ namespace {
 
 constexpr double pi = std::numbers::pi;
 constexpr Complex k_i{0.0, 1.0};
-constexpr double k_farFieldRatio = 0.5; // the Laurent series is used where radius / |z - z_c| is below this
-constexpr int k_laurentTerms = 50;      // as for the source-panel bodies
 constexpr int k_arcSamples = 1024;      // trapezoidal rule in theta0 for the circular arc's theory
 constexpr double k_maxArcCamber = 0.25; // h/c: a quarter of the chord (a half circle would be 0.5)
 
@@ -62,12 +60,52 @@ const GaussRule& gaussRule() {
     return rule;
 }
 
-// log((z - z1) / (z - z2)) of a panel of length L, from zeta = conj(t) (z - z1); on the panel itself
-// (where the ratio is negative real) the principal value, the mean of the two sides.
+// Lambda = log((z - z1) / (z - z2)) of a panel of length L, from zeta = conj(t) (z - z1); on the panel
+// itself (where the ratio is negative real) the principal value, the mean of the two sides.
+// Far from a short panel the ratio is 1 + delta with delta = L / (zeta - L) small, and Lambda is
+// about delta: it is taken as log1p(delta), accurate to rounding relative to itself, because the
+// velocity multiplies it by zeta / L (thousands for the short panels at the leading edge).
 Complex logRatio(Complex zeta, double length) {
-    const Complex ratio = zeta / (zeta - length);
-    if (ratio.real() < 0.0 && std::abs(ratio.imag()) <= 1e-12 * -ratio.real()) return {std::log(-ratio.real()), 0.0};
-    return std::log(ratio);
+    const double dr = zeta.real() - length;
+    const double di = zeta.imag();
+    const double d2 = dr * dr + di * di;
+    const double xr = length * dr / d2; // delta
+    const double xi = -length * di / d2;
+    const double s = 1.0 + xr;
+    const double re = 0.5 * std::log1p(xr * (2.0 + xr) + xi * xi); // ln |1 + delta|
+    const double im = s < 0.0 && std::abs(xi) <= 1e-12 * -s ? 0.0 : std::atan2(xi, s);
+    return {re, im};
+}
+
+// The bracket of a panel's velocity, W = (i conj(t) / 2 pi) [gamma1 Lambda + (gamma2 - gamma1) h],
+// h = Lambda zeta / L - 1, which is small far from the panel (about L / 2 zeta) and so is written
+// without subtracting nearly equal terms once Lambda is accurate.
+Complex panelBracket(Complex zeta, double length, double gamma1, double gamma2) {
+    const Complex lambda = logRatio(zeta, length);
+    return gamma1 * lambda + (gamma2 - gamma1) * (lambda * zeta / length - 1.0);
+}
+
+// The series of panels [first, last) about `centre` (radius r): a_m / r^m = (i / 2 pi r) int gamma(s)
+// u(s)^(m-1) ds, u = (z(s) - centre) / r, by Gauss-Legendre on each panel (exact: a polynomial).
+std::vector<Complex> sheetLaurent(const VortexSheet& sheet, std::size_t first, std::size_t last, Vec2 centre, double r) {
+    std::vector<Complex> laurent(k_laurentTerms);
+    const GaussRule& rule = gaussRule();
+    for (std::size_t j = first; j < last; ++j) {
+        const Complex u1 = toComplex(sheet.vertices[j] - centre) / r;
+        const Complex u2 = toComplex(sheet.vertices[j + 1] - centre) / r;
+        for (int q = 0; q < k_gaussPoints; ++q) {
+            const double tau = rule.node[static_cast<std::size_t>(q)];
+            const double strength = sheet.gamma[j] + (sheet.gamma[j + 1] - sheet.gamma[j]) * tau;
+            const Complex u = u1 + (u2 - u1) * tau;
+            Complex power = rule.weight[static_cast<std::size_t>(q)] * sheet.lengths[j] * strength;
+            for (int m = 1; m <= k_laurentTerms; ++m) {
+                laurent[static_cast<std::size_t>(m - 1)] += power;
+                power *= u;
+            }
+        }
+    }
+    for (Complex& a : laurent) a *= k_i / (2.0 * pi * r);
+    return laurent;
 }
 
 bool crossesProperly(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
@@ -266,31 +304,32 @@ PanelInfluence unitVortexPanelVelocity(Vec2 a, Vec2 b, Vec2 p) {
     const Complex t = toComplex(b - a) / l;
     const Complex zeta = std::conj(t) * toComplex(p - a);
     const Complex lambda = logRatio(zeta, l);
+    const Complex h = lambda * zeta / l - 1.0; // see panelBracket()
     const Complex factor = k_i * std::conj(t) / (2.0 * pi);
-    return {factor * (lambda * (1.0 - zeta / l) + 1.0), factor * (lambda * zeta / l - 1.0)};
+    return {factor * (lambda - h), factor * h};
 }
 
 Complex VortexSheet::complexVelocity(Vec2 p) const {
     const Complex dz = toComplex(p - centre);
     const double distance = std::abs(dz);
-    if (radius < k_farFieldRatio * distance) {
-        const Complex w = radius / dz;
-        const double ratio = radius / distance;
-        const int terms = std::min(k_laurentTerms, static_cast<int>(std::ceil(-36.8 / std::log(ratio))) + 1);
-        Complex sum{};
-        for (int m = terms; m >= 1; --m) sum = (sum + laurent[static_cast<std::size_t>(m - 1)]) * w;
-        return sum;
-    }
+    if (radius < k_farFieldRatio * distance) return laurentVelocity(laurent, radius, dz, distance);
+    // Near the sheet: each group of panels by its own series where p is far enough from it, else
+    // panel by panel.
     Complex sum{};
-    for (std::size_t j = 0; j < lengths.size(); ++j) {
-        const Complex t = toComplex(tangents[j]);
-        const double l = lengths[j];
-        const Complex zeta = std::conj(t) * toComplex(p - vertices[j]);
-        const double g1 = gamma[j];
-        const double g2 = gamma[j + 1];
-        sum += std::conj(t) * (logRatio(zeta, l) * (g1 + (g2 - g1) * zeta / l) - (g2 - g1));
+    Complex series{};
+    for (const PanelCluster& c : clusters) {
+        const Vec2 d = p - c.centre;
+        const double d2 = lengthSquared(d);
+        if (useSeries(c.radius, d2)) {
+            series += laurentVelocity(c.laurent, c.radius, toComplex(d), std::sqrt(d2));
+            continue;
+        }
+        for (std::size_t j = c.first; j < c.last; ++j) {
+            const Complex t{tangents[j].x, -tangents[j].y}; // conj(t)
+            sum += t * panelBracket(t * toComplex(p - vertices[j]), lengths[j], gamma[j], gamma[j + 1]);
+        }
     }
-    return k_i * sum / (2.0 * pi);
+    return k_i * sum / (2.0 * pi) + series;
 }
 
 Complex VortexSheet::complexPotential(Vec2 p) const {
@@ -377,24 +416,9 @@ void setSheetStrengths(VortexSheet& sheet, std::vector<double> gamma) {
         sheet.circulation += sheet.lengths[j] * sheet.strengthAt(j);
     }
 
-    // a_m / R^m = (i / 2 pi R) int gamma(s) u(s)^(m-1) ds, u = (z(s) - z_c) / R, by Gauss-Legendre on each panel.
-    sheet.laurent.assign(k_laurentTerms, {});
-    const GaussRule& rule = gaussRule();
-    for (std::size_t j = 0; j < n; ++j) {
-        const Complex u1 = toComplex(sheet.vertices[j] - sheet.centre) / sheet.radius;
-        const Complex u2 = toComplex(sheet.vertices[j + 1] - sheet.centre) / sheet.radius;
-        for (int q = 0; q < k_gaussPoints; ++q) {
-            const double tau = rule.node[static_cast<std::size_t>(q)];
-            const double strength = sheet.gamma[j] + (sheet.gamma[j + 1] - sheet.gamma[j]) * tau;
-            const Complex u = u1 + (u2 - u1) * tau;
-            Complex power = rule.weight[static_cast<std::size_t>(q)] * sheet.lengths[j] * strength;
-            for (int m = 1; m <= k_laurentTerms; ++m) {
-                sheet.laurent[static_cast<std::size_t>(m - 1)] += power;
-                power *= u;
-            }
-        }
-    }
-    for (Complex& a : sheet.laurent) a *= k_i / (2.0 * pi * sheet.radius);
+    sheet.laurent = sheetLaurent(sheet, 0, n, sheet.centre, sheet.radius);
+    sheet.clusters = clusterPanels(n, [&](std::size_t j) { return std::pair{sheet.vertices[j], sheet.vertices[j + 1]}; });
+    for (PanelCluster& c : sheet.clusters) c.laurent = sheetLaurent(sheet, c.first, c.last, c.centre, c.radius);
 }
 
 double sheetNormalFlowResidual(const VortexSheet& sheet, const FlowField& field) {

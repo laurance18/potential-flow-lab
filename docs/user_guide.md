@@ -101,6 +101,17 @@ The **View** menu holds the plot settings, which are saved with the scene:
 - **Tracer particles** and **Particle trails**: animated particles coloured by speed (blue slow,
   red fast). They are a visual aid only; the streamlines are the result.
 
+**Speed.** The work runs on every core of the processor:
+- the tracer particles and the dye;
+- the |V| and Cp contours, and the search for stagnation points;
+- while you drag, slide or sweep, the streamlines through the previous frame's seeds.
+
+Each result is exactly what one core would compute, only sooner. Near source-panel bodies and
+thin airfoils, each group of 16 panels sums its velocity as a series of its own wherever a point is
+far enough from it. That gives the same values to rounding as summing the panels one by one, about
+twice as fast near a 100-panel body. Animations stay smooth with several panel bodies, and a drag
+redraws the streamlines several times a second even around an airfoil next to a body.
+
 ## Dye rakes
 
 A dye rake is a line of dye emitters, as in a water or smoke tunnel. Click the rake tool at the
@@ -337,9 +348,9 @@ independently of them:
 - a and b are the half-width and half-height of the outline: it is stretched to fit 2a × 2b.
   *Keep the outline's proportions* sets b back so that it is not distorted.
 - An outline must not cross itself (the dialog says so if it does). Concave shapes are fine: a body
-  that no point inside it sees whole (a crescent, a C) sums its panels one by one instead of the
-  faster way, with the same result. Its φ and ψ exports then jump across lines running in −x from
-  the vertices; the velocity does not.
+  that no point inside it sees whole (a crescent, a C) sums the panels of its complex potential one
+  by one instead of by vertex, with the same result. Its φ and ψ exports then jump across lines
+  running in −x from the vertices; the velocity does not.
 
 What to expect from these shapes: Cp converges at first order on them (the error halves when N
 doubles), as constant-strength panels do on a general spacing. The ellipse preset's equal steps

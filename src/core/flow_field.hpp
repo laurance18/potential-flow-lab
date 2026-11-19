@@ -73,6 +73,7 @@ struct ScalarGrid {
 };
 
 // |V| on a grid: NaN outside the flow domain, +infinity within singularRadius of a singular point.
+// The rows are sampled on every core (as are typicalSpeed()'s), with the same result as one by one.
 ScalarGrid sampleSpeed(const FlowField& field, const Rect& bounds, int columns, int rows, double singularRadius);
 
 } // namespace pfl

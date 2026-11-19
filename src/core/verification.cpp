@@ -2229,8 +2229,8 @@ VerificationResult panelSums() {
     r.error = std::max(nearError, farError);
     r.tolerance = k_exactTolerance;
     r.errorLabel = "max |W − W_direct| / V∞ over every node outside the bodies";
-    r.comparisons = {{"Nearer than 2 radii (logarithms by vertex)", num(nearError), "0"},
-                     {"Farther (Laurent series)", num(farError), "0"}};
+    r.comparisons = {{"Nearer than 2 radii (groups of 16 panels: series, or panel by panel)", num(nearError), "0"},
+                     {"Farther (the body's Laurent series)", num(farError), "0"}};
     r.note = std::format("{} evaluations, two bodies of 48 panels each (a square and an ellipse).", count(r.samples));
     return finish(std::move(r));
 }
@@ -2523,8 +2523,9 @@ VerificationResult panelConcave() {
     r.comparisons = {{"Crescent, 120 panels: max |v·n| / V∞ at the control points", num(residual), "0"},
                      {"Every node outside: max |W − W_direct| / V∞", num(sum), "0"},
                      {"Inside the hollow of the crescent", model.field.inDomain({-0.3, 0.0}) ? "fluid" : "body", "fluid"}};
-    r.note = std::format("{} nodes. No point inside the crescent sees all of its outline, so its panels are summed one by one "
-                         "(and far away by the Laurent series) instead of by vertex.", count(nodes));
+    r.note = std::format("{} nodes. No point inside the crescent sees all of its outline, so its complex potential sums the "
+                         "panels one by one instead of by vertex; the velocity always does (in groups of 16 with their own "
+                         "series, and far away by the body's series).", count(nodes));
     if (!model.field.inDomain({-0.3, 0.0})) r.error = inf;
     return finish(std::move(r));
 }
@@ -2957,19 +2958,16 @@ VerificationResult thinSums() {
             ++r.samples;
         }
     }
-    // Rounding scales with the largest strength (at the leading edge, some 30 V∞), not with V∞.
-    const double largest = *std::ranges::max_element(sheet.gamma, {}, [](double g) { return std::abs(g); });
-    nearError /= std::abs(largest);
-    farError /= std::abs(largest);
     r.error = std::max(nearError, farError);
     r.tolerance = k_exactTolerance;
-    r.errorLabel = "max |W − W_quadrature| / max|γ| over every node 0.05c or more from the sheet";
-    r.comparisons = {{"Nearer than 2 radii (closed form, panel by panel)", num(nearError), "0"},
-                     {"Farther (Laurent series)", num(farError), "0"}};
-    r.note = std::format("{} nodes, a NACA 2412 camber line of 80 panels (largest γ = {:.4g} V∞, at the leading edge). Each "
-                         "panel's γ varies linearly, and its velocity is the logarithm formula "
-                         "(i e^(−iθ)/2π)[Λ(γ₁(1 − ζ/L) + γ₂ ζ/L) − (γ₂ − γ₁)].",
-                         count(r.samples), std::abs(largest));
+    r.errorLabel = "max |W − W_quadrature| / V∞ over every node 0.05c or more from the sheet";
+    r.comparisons = {{"Nearer than 2 radii (groups of panels: series, or panel by panel)", num(nearError), "0"},
+                     {"Farther (the sheet's Laurent series)", num(farError), "0"}};
+    r.note = std::format("{} nodes, a NACA 2412 camber line of 80 panels. Each panel's γ varies linearly, and its velocity is "
+                         "the logarithm formula (i e^(−iθ)/2π)[γ₁Λ + (γ₂ − γ₁)(Λζ/L − 1)] with Λ = log((z − z₁)/(z − z₂)), "
+                         "taken as log1p so that it keeps its digits far from the short panels at the leading edge; groups of "
+                         "16 panels far enough from the node use their own Laurent series.",
+                         count(r.samples));
     return finish(std::move(r));
 }
 
@@ -3259,8 +3257,9 @@ const VerificationCheck k_checks[] = {
      "convergence.",
      panelEllipseScene, panelStrengths},
     {k_panels, "Panel sums, near and far",
-     "Each panel contributes W = (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)), θ the panel's direction. The program regroups the "
-     "logarithms by vertex, and beyond two body radii sums a Laurent series instead.",
+     "Each panel contributes W = (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)), θ the panel's direction. The program sums groups "
+     "of 16 panels by Laurent series of their own where a point is far enough from them, and beyond two body radii one "
+     "series for the whole body.",
      "Sum every panel directly at every node outside two bodies (a square and an ellipse) and compare.", panelBluffScene,
      panelSums},
     {k_panels, "Flow field around a panel body",

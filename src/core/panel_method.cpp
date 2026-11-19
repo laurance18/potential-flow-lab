@@ -11,8 +11,6 @@ namespace pfl {
 namespace {
 
 constexpr double pi = std::numbers::pi;
-constexpr double k_farFieldRatio = 0.5; // the Laurent series is used where radius / |z - z_c| is below this
-constexpr int k_laurentTerms = 50;      // 0.5^50 ~ 1e-15: full precision at the switch-over distance
 
 Vec2 rotated(Vec2 v, double angle) {
     const double c = std::cos(angle);
@@ -194,6 +192,23 @@ void finishBody(SourcePanels& body) {
         }
         body.laurent[static_cast<std::size_t>(m - 1)] = -sum / (2.0 * pi * m);
     }
+
+    // The groups of panels: panel j, from a to b, has log((z - a)/(z - b)) = sum_m ((b - z_q)^m - (a - z_q)^m) / (m (z - z_q)^m).
+    body.clusters = clusterPanels(n, [&](std::size_t j) { return std::pair{body.vertices[j], body.vertices[(j + 1) % n]}; });
+    for (PanelCluster& c : body.clusters) {
+        c.laurent.assign(k_laurentTerms, {});
+        for (std::size_t j = c.first; j < c.last; ++j) {
+            const Complex a = toComplex(body.vertices[j] - c.centre) / c.radius;
+            const Complex b = toComplex(body.vertices[(j + 1) % n] - c.centre) / c.radius;
+            Complex powerA = a;
+            Complex powerB = b;
+            for (int m = 1; m <= k_laurentTerms; ++m) {
+                c.laurent[static_cast<std::size_t>(m - 1)] += body.panelWeights[j] * (powerB - powerA) / static_cast<double>(m);
+                powerA *= a;
+                powerB *= b;
+            }
+        }
+    }
 }
 
 } // namespace
@@ -262,46 +277,41 @@ std::vector<double> ellipseMidpointParameters(const PanelBody& body) {
 Complex SourcePanels::complexVelocity(Vec2 p) const {
     const Complex dz = toComplex(p - centre);
     const double distance = std::abs(dz);
-    if (radius < k_farFieldRatio * distance) {
-        // Horner in w = radius / (z - z_c); terms fall off like (radius / |z - z_c|)^m.
-        const Complex w = radius / dz;
-        const double ratio = radius / distance;
-        const int terms = std::min(k_laurentTerms, static_cast<int>(std::ceil(-36.8 / std::log(ratio))) + 1);
-        Complex sum{};
-        for (int m = terms; m >= 1; --m) sum = (sum + laurent[static_cast<std::size_t>(m - 1)]) * w;
-        return sum;
-    }
-    if (!starShaped) {
-        // Panel by panel: each logarithm is cut only along its own panel. On the panel itself (its
-        // control point) the ratio is negative real, and the limit from outside, on the right of the
-        // clockwise panel, has the argument -pi.
-        Complex sum{};
-        const std::size_t n = vertices.size();
-        for (std::size_t j = 0; j < n; ++j) {
-            const Complex ratio = toComplex(p - vertices[j]) / toComplex(p - vertices[(j + 1) % n]);
-            const bool onPanel = ratio.real() < 0.0 && std::abs(ratio.imag()) <= 1e-12 * -ratio.real();
-            const Complex log = onPanel ? Complex{std::log(-ratio.real()), -pi} : std::log(ratio);
-            sum += panelWeights[j] * log;
-        }
-        return sum;
-    }
-    // log of each ratio written out (ln |r| from |r|^2, so no square root): this loop is where the
-    // particles and streamlines spend their time near a body.
-    const Complex q = 1.0 / dz;
+    if (radius < k_farFieldRatio * distance) return laurentVelocity(laurent, radius, dz, distance);
+    // Near the body: each group of panels by its own series where p is far enough from it, else panel
+    // by panel. Each panel's logarithm is cut only along the panel itself; it is written out (ln |r|
+    // from |r|^2, no complex division), since this loop is where particles and streamlines spend
+    // their time near a body. On the panel itself (its control point) the ratio is negative real, and
+    // the limit from outside, on the right of the clockwise panel, has the argument -pi.
+    const std::size_t n = vertices.size();
     double re = 0.0;
     double im = 0.0;
-    for (std::size_t k = 0; k < vertices.size(); ++k) {
-        const double ux = p.x - vertices[k].x;
-        const double uy = p.y - vertices[k].y;
-        const double rx = ux * q.real() - uy * q.imag();
-        const double ry = ux * q.imag() + uy * q.real();
-        const double lnr = 0.5 * std::log(rx * rx + ry * ry);
-        const double arg = std::atan2(ry, rx);
-        const Complex c = vertexWeights[k];
-        re += c.real() * lnr - c.imag() * arg;
-        im += c.imag() * lnr + c.real() * arg;
+    Complex series{};
+    for (const PanelCluster& c : clusters) {
+        const Vec2 d = p - c.centre;
+        const double d2 = lengthSquared(d);
+        if (useSeries(c.radius, d2)) {
+            series += laurentVelocity(c.laurent, c.radius, toComplex(d), std::sqrt(d2));
+            continue;
+        }
+        Vec2 u1 = p - vertices[c.first];
+        double l1 = lengthSquared(u1);
+        for (std::size_t j = c.first; j < c.last; ++j) {
+            const Vec2 u2 = p - vertices[(j + 1) % n];
+            const double l2 = lengthSquared(u2);
+            // log(u1 / u2) = ln(|u1| / |u2|) + i arg(u1 conj(u2)).
+            const double x = dot(u1, u2);
+            const double y = cross(u2, u1);
+            const double arg = x < 0.0 && std::abs(y) <= 1e-12 * -x ? -pi : std::atan2(y, x);
+            const double lnr = 0.5 * std::log(l1 / l2);
+            const Complex w = panelWeights[j];
+            re += w.real() * lnr - w.imag() * arg;
+            im += w.imag() * lnr + w.real() * arg;
+            u1 = u2;
+            l1 = l2;
+        }
     }
-    return Complex{re, im} / (2.0 * pi);
+    return Complex{re, im} + series;
 }
 
 Complex SourcePanels::complexPotential(Vec2 p) const {

@@ -1,10 +1,12 @@
 # pfl_core: pure math/physics. Must never depend on OpenGL, GLFW or ImGui.
 add_library(pfl_core STATIC
     vec2.hpp
+    parallel.hpp
     flow_element.hpp flow_element.cpp
     flow_field.hpp flow_field.cpp
     image_system.hpp image_system.cpp
     panel_geometry.hpp panel_geometry.cpp
+    panel_expansion.hpp
     panel_method.hpp panel_method.cpp
     vortex_sheet.hpp vortex_sheet.cpp
     scene.hpp scene.cpp

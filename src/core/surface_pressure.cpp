@@ -1,5 +1,7 @@
 #include "core/surface_pressure.hpp"
 
+#include "core/parallel.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -423,8 +425,13 @@ std::vector<Vec2> newtonStagnationPoints(const FlowField& field, const Rect& reg
     if (!(extent > 0.0) || !(speedScale > 0.0)) return found;
     const Rect searchArea = region.expanded(0.1);
 
-    for (int j = 0; j < seedGrid; ++j) {
-        for (int i = 0; i < seedGrid; ++i) {
+    // Newton from every seed on every core; the points it reaches are merged in seed order after.
+    const std::size_t seeds = static_cast<std::size_t>(std::max(seedGrid, 0));
+    std::vector<std::optional<Vec2>> reached(seeds * seeds);
+    parallelFor(reached.size(), 8, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+            const double i = static_cast<double>(s % seeds);
+            const double j = static_cast<double>(s / seeds);
             const Vec2 seed = region.min + Vec2{size.x * (i + 0.5) / seedGrid, size.y * (j + 0.5) / seedGrid};
             if (!field.panelBodies.empty() && field.panelBodyAt(seed) != nullptr) continue;
             const Vec2 p = toVec(newtonOnVelocity(field, toComplex(seed), searchArea, extent));
@@ -435,12 +442,15 @@ std::vector<Vec2> newtonStagnationPoints(const FlowField& field, const Rect& reg
             const bool nearSheet = std::ranges::any_of(field.vortexSheets, [p](const VortexSheet& sheet) {
                 return sheet.distanceTo(p) < sheet.longestPanel();
             });
-            if (nearBody || nearSheet) continue;
-            const bool known = std::ranges::any_of(found, [&](Vec2 q) {
-                return lengthSquared(p - q) < k_mergeDistance * k_mergeDistance * extent * extent;
-            });
-            if (!known) found.push_back(p);
+            if (!nearBody && !nearSheet) reached[s] = p;
         }
+    });
+    for (const std::optional<Vec2>& p : reached) {
+        if (!p) continue;
+        const bool known = std::ranges::any_of(found, [&](Vec2 q) {
+            return lengthSquared(*p - q) < k_mergeDistance * k_mergeDistance * extent * extent;
+        });
+        if (!known) found.push_back(*p);
     }
     return found;
 }

@@ -35,7 +35,8 @@
 // across the sheet, as it should. Exactly on the sheet (the control points) the velocity is the
 // mean of the two sides (the principal value), and the two sides are that mean +-(gamma / 2) t.
 // Far from the sheet (beyond twice its radius from the middle of the chord) W is summed as a
-// Laurent series in 1 / (z - z_c), as for the source-panel bodies.
+// Laurent series in 1 / (z - z_c), and nearer in each group of 16 panels uses a series of its own
+// where the point is far enough from it, as for the source-panel bodies (panel_expansion.hpp).
 //
 // The complex potential F is multivalued: phi changes by Gamma around the airfoil. Its branch cuts
 // are the sheet itself (phi really jumps across a vortex sheet) and a ray from the trailing edge
@@ -59,6 +60,7 @@
 #pragma once
 
 #include "core/flow_element.hpp"
+#include "core/panel_expansion.hpp"
 #include "core/vec2.hpp"
 
 #include <optional>
@@ -163,6 +165,7 @@ struct VortexSheet {
     double radius = 0.0;  // largest distance of a vertex from it
     Rect box;             // bounding box of the vertices
     std::vector<Complex> laurent; // as SourcePanels::laurent
+    std::vector<PanelCluster> clusters; // groups of panels with series of their own (panel_expansion.hpp)
 
     std::size_t size() const { return lengths.size(); } // N
     Vec2 leadingEdge() const { return vertices.front(); }
