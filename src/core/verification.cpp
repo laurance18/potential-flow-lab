@@ -574,6 +574,9 @@ SceneElement turnedElement(SceneElement element, double a) {
                 e.vertex = turned(e.vertex, a);
                 e.wall1 += a;
                 e.wall2 += a;
+            } else if constexpr (std::is_same_v<T, PanelBody> || std::is_same_v<T, ThinAirfoil>) {
+                e.position = turned(e.position, a);
+                e.angle += a;
             } else {
                 e.point = turned(e.point, a);
                 e.angle += a;
@@ -603,6 +606,19 @@ SceneElement mirroredElement(SceneElement element) {
                 e.vertex = mirroredInX(e.vertex);
                 e.strength = -e.strength;
                 e.wall1 = -std::exchange(e.wall2, -e.wall1);
+            } else if constexpr (std::is_same_v<T, PanelBody>) {
+                // An ellipse and a rectangle are symmetric about their own axes; an airfoil turns over,
+                // and an outline is mirrored in its own frame.
+                e.position = mirroredInX(e.position);
+                e.angle = -e.angle;
+                if (e.shape == PanelShape::Naca) e.nacaCamber = -e.nacaCamber;
+                for (Vec2& p : e.outline) p.y = -p.y;
+            } else if constexpr (std::is_same_v<T, ThinAirfoil>) {
+                // The camber line turns over.
+                e.position = mirroredInX(e.position);
+                e.angle = -e.angle;
+                e.nacaCamber = -e.nacaCamber;
+                e.arcCamber = -e.arcCamber;
             } else {
                 e.point = mirroredInX(e.point);
                 e.angle = -e.angle;
@@ -1955,6 +1971,1064 @@ VerificationResult dyeStreaks() {
 }
 
 
+// --- Panel methods ----------------------------------------------------------------------
+
+// The exact side for an ellipse with semi-axes a > b, in the body's own frame and in elliptic
+// coordinates z = c cosh(ξ + iη), c² = a² − b², the surface being ξ = ξ₀ with tanh ξ₀ = b/a.
+struct EllipseFrame {
+    Vec2 centre;
+    double angle = 0.0; // of the a axis, counter-clockwise from +x
+    double a = 1.0;
+    double b = 1.0;
+};
+
+EllipseFrame frameOf(const PanelBody& body) {
+    return {.centre = body.position, .angle = body.angle, .a = body.semiAxisA, .b = body.semiAxisB};
+}
+
+Vec2 toBodyFrame(const EllipseFrame& e, Vec2 p) { return turned(p - e.centre, -e.angle); }
+
+// Eccentric anomaly η of a point (x = a cos η, y = b sin η for a point on the surface; the control
+// points lie on the chords, a little inside, at the same η as the middle of their arc).
+double eccentricAnomaly(const EllipseFrame& e, Vec2 p) {
+    const Vec2 q = toBodyFrame(e, p);
+    return std::atan2(q.y / e.b, q.x / e.a);
+}
+
+// Surface speed, stream V∞ at α to the a axis, circulation Γ (clockwise > 0):
+// |V| = |2V∞ sin(η − α) + Γ / π(a + b)| · ½(a + b) / √(a² sin²η + b² cos²η). For a = b it is the cylinder's.
+double ellipseSurfaceSpeed(const EllipseFrame& e, double speed, double alpha, double gamma, double eta) {
+    const double s = std::sin(eta);
+    const double c = std::cos(eta);
+    return std::abs(2.0 * speed * std::sin(eta - (alpha - e.angle)) + gamma / (pi * (e.a + e.b))) * 0.5 * (e.a + e.b) /
+           std::sqrt(e.a * e.a * s * s + e.b * e.b * c * c);
+}
+
+// Velocity outside the ellipse (a > b), no circulation: F = V∞ (a + b) cosh(w − ξ₀ − iα) with z = c cosh w,
+// so W = V∞ (a + b) sinh(w − ξ₀ − iα) / (c sinh w). α is the stream direction in the plot.
+Vec2 exactEllipse(const EllipseFrame& e, double speed, double alpha, Vec2 p) {
+    const Vec2 q = toBodyFrame(e, p);
+    const double c = std::sqrt(e.a * e.a - e.b * e.b);
+    const double xi0 = std::atanh(e.b / e.a);
+    const std::complex<double> w = std::acosh(std::complex<double>(q.x, q.y) / c);
+    const std::complex<double> big =
+        speed * (e.a + e.b) * std::sinh(w - xi0 - std::complex<double>(0.0, alpha - e.angle)) / (c * std::sinh(w));
+    return turned(Vec2{big.real(), -big.imag()}, e.angle);
+}
+
+// Outside the ellipse scaled up by `factor` about its centre.
+bool beyond(const EllipseFrame& e, Vec2 p, double factor) {
+    const Vec2 q = toBodyFrame(e, p);
+    return (q.x / e.a) * (q.x / e.a) + (q.y / e.b) * (q.y / e.b) >= factor * factor;
+}
+
+// The surface of the one panel body of a flow, if it has exactly one.
+std::optional<BodySurface> panelSurfaceOf(const FlowModel& model) {
+    const std::vector<BodySurface> bodies = findBodySurfaces(model, k_view);
+    if (bodies.size() != 1 || !bodies.front().panelBody) return std::nullopt;
+    return bodies.front();
+}
+
+// Largest |Cp − Cp_exact| over the control points of a panel ellipse (or circle) alone in a stream.
+std::optional<double> panelCpError(const Scene& scene, double gamma = 0.0) {
+    const FlowModel model = modelOf(scene);
+    const std::optional<BodySurface> body = panelSurfaceOf(model);
+    if (!body) return std::nullopt;
+    const EllipseFrame e = frameOf(model.field.panelBodies.front().body);
+    const double alpha = std::atan2(model.freeStream.y, model.freeStream.x);
+    double worst = 0.0;
+    for (std::size_t k = 0; k < body->points.size(); ++k) {
+        const double v = ellipseSurfaceSpeed(e, model.freeStreamSpeed, alpha, gamma, eccentricAnomaly(e, body->points[k]));
+        worst = std::max(worst, std::abs(body->cp[k] - (1.0 - v * v / (model.freeStreamSpeed * model.freeStreamSpeed))));
+    }
+    return worst;
+}
+
+Scene withPanels(Scene scene, int panels) {
+    for (SceneElement& element : scene.elements) {
+        if (auto* body = std::get_if<PanelBody>(&element)) body->panels = panels;
+    }
+    return scene;
+}
+
+void showSurface(PlotSettings& p) { p.showSurfacePressure = true; }
+
+Scene panelCylinderScene() { return withPlot({.elements = {UniformFlow{}, PanelBody{.panels = 8}}}, showSurface); }
+Scene panelEllipseScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg},
+                                  PanelBody{.semiAxisA = 2.0, .semiAxisB = 0.5, .angle = 10.0 * deg, .panels = 64}}},
+                    showSurface);
+}
+Scene panelLiftingScene() {
+    return withPlot({.elements = {UniformFlow{}, PanelBody{.panels = 64}, Vortex{.circulation = 2.0 * pi}}}, showSurface);
+}
+Scene panelBluffScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 15.0 * deg},
+                                  PanelBody{.shape = PanelShape::Rectangle, .position = {-1.6, -0.2}, .semiAxisA = 0.6,
+                                            .semiAxisB = 0.6, .panels = 48},
+                                  PanelBody{.position = {1.4, 0.4}, .semiAxisA = 1.0, .semiAxisB = 0.4, .angle = 30.0 * deg,
+                                            .panels = 48}}},
+                    showSurface);
+}
+
+// Observed order of convergence from two errors at N and 2N.
+double order(double coarse, double fine) { return std::log2(coarse / fine); }
+
+VerificationResult panelCylinder() {
+    VerificationResult r;
+    // Anderson's example: 8 panels, the first facing the stream.
+    const FlowModel eight = modelOf(panelCylinderScene());
+    if (eight.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+    const std::vector<double>& lambda = eight.field.panelBodies.front().strengths;
+    const auto ratio = [&](std::size_t j) {
+        const double x = lambda[j] / (2.0 * pi);
+        return std::format("{:.4f}", std::abs(x) < 5e-5 ? 0.0 : x);
+    };
+    r.comparisons.push_back({"N = 8: λ/2πV∞ on the panels facing the stream, at 45° and at the top",
+                             std::format("{}, {}, {}", ratio(0), ratio(1), ratio(2)), "0.3765, 0.2662, 0 (Anderson)"});
+
+    struct Case {
+        const char* name;
+        Scene scene;
+    };
+    const Case cases[] = {
+        {"N = 8, V∞ = 1 along x", panelCylinderScene()},
+        {"N = 40, a = 0.8 off the origin, V∞ = 1.3 at 30°",
+         {.elements = {UniformFlow{.speed = 1.3, .angle = 30.0 * deg},
+                       PanelBody{.position = {0.3, -0.2}, .semiAxisA = 0.8, .semiAxisB = 0.8, .angle = 11.0 * deg, .panels = 40}}}},
+        {"N = 9 (odd), V∞ = 1 along x", withPanels(panelCylinderScene(), 9)},
+    };
+    for (const Case& c : cases) {
+        const std::optional<double> error = panelCpError(c.scene);
+        if (!error) return unable(std::format("Expected one panel body: {}.", c.name));
+        r.error = std::max(r.error, *error);
+        r.samples += std::get<PanelBody>(c.scene.elements[1]).panels;
+        r.comparisons.push_back({std::format("{}: max |Cp − Cp_exact|", c.name), num(*error), "0"});
+    }
+    const std::optional<BodySurface> body = panelSurfaceOf(eight);
+    if (!body) return unable("Expected one panel body.");
+    r.comparisons.push_back({"N = 8: lowest Cp (at the top)", std::format("{:.6f}", *std::ranges::min_element(body->cp)),
+                             "−3 (1 − 4 sin² 90°: a control point lies at the top)"});
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points";
+    r.note = "On a regular polygon the constant-strength panels give the exact cylinder Cp at every control point, for any "
+             "N and any stream direction; between the control points and away from the surface they do not (see the "
+             "ellipse checks).";
+    return finish(std::move(r));
+}
+
+VerificationResult panelEllipse() {
+    VerificationResult r;
+    std::vector<double> errors;
+    for (const int n : {32, 64, 128, 256}) {
+        const std::optional<double> error = panelCpError(withPanels(panelEllipseScene(), n));
+        if (!error) return unable("Expected one panel body.");
+        errors.push_back(*error);
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: max |Cp − Cp_exact|", n), num(*error),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], *error))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points for N = 256";
+    r.note = "Constant-strength panels with midpoint collocation: the error falls about 4× each time N doubles "
+             "(second order). Most of it is at the pointed ends, where the curvature is largest.";
+    if (order(errors[2], errors[3]) < 1.7) {
+        r.error = inf;
+        r.note += " The observed order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+// The continuous source sheet on an ellipse that makes the exact outside flow. Its potential is
+// continuous, so inside it is the harmonic function with the outside surface values
+// 2V∞R cos(η − α), R = (a + b)/2: φ = 2V∞R (x cos α / a + y sin α / b), a uniform flow. The sheet
+// strength is the jump of v·n across it, outside (0) minus inside.
+double exactSheetStrength(const EllipseFrame& e, double speed, double alpha, double eta) {
+    const double local = alpha - e.angle;
+    const double radius = 0.5 * (e.a + e.b);
+    const Vec2 inside{2.0 * speed * radius * std::cos(local) / e.a, 2.0 * speed * radius * std::sin(local) / e.b};
+    const Vec2 gradient{std::cos(eta) / e.a, std::sin(eta) / e.b}; // of x²/a² + y²/b², along the outward normal
+    return -dot(inside, gradient) / length(gradient);
+}
+
+VerificationResult panelStrengths() {
+    VerificationResult r;
+    struct Case {
+        const char* name;
+        Scene scene;
+    };
+    const Case cases[] = {{"Circle", withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg}, PanelBody{}}},
+                                              showSurface)},
+                          {"4:1 ellipse", panelEllipseScene()}};
+    double worst = 0.0;
+    for (const Case& c : cases) {
+        std::vector<double> errors;
+        for (const int n : {50, 100, 200, 400}) {
+            const FlowModel model = modelOf(withPanels(c.scene, n));
+            if (model.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+            const SourcePanels& body = model.field.panelBodies.front();
+            const EllipseFrame e = frameOf(body.body);
+            const double alpha = std::atan2(model.freeStream.y, model.freeStream.x);
+            double error = 0.0;
+            for (std::size_t j = 0; j < body.size(); ++j) {
+                const double exact = exactSheetStrength(e, model.freeStreamSpeed, alpha, eccentricAnomaly(e, body.controlPoints[j]));
+                error = std::max(error, std::abs(body.strengths[j] - exact) / model.freeStreamSpeed);
+            }
+            errors.push_back(error);
+            r.samples += n;
+            r.comparisons.push_back({std::format("{}, N = {}: max |λ − λ_exact| / V∞", c.name, n), num(error),
+                                     errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], error))
+                                                       : std::string("—")});
+        }
+        worst = std::max(worst, errors.back());
+        if (order(errors[2], errors[3]) < 0.8) {
+            r.error = inf;
+            r.note = std::format("{}: the observed order is below 0.8. ", c.name);
+        }
+    }
+    if (std::isfinite(r.error)) r.error = worst;
+    r.tolerance = 0.05;
+    r.errorLabel = "max |λ − λ_exact| / V∞ for N = 400";
+    r.note += "The strengths converge at first order: on a circle λ = −2V∞ cos(θ − α), but 8 panels give 2.366 V∞ on the "
+              "panel facing the stream, 18% high. The Cp at the control points converges faster (second order, and exactly "
+              "on a circle).";
+    return finish(std::move(r));
+}
+
+VerificationResult panelSums() {
+    // Each panel on its own: W = (λ/2π) conj(t) log((z − z₁)/(z − z₂)), summed directly.
+    const FlowModel model = modelOf(panelBluffScene());
+    if (model.field.panelBodies.size() != 2) return unable("Expected two panel bodies.");
+    VerificationResult r;
+    double nearError = 0.0;
+    double farError = 0.0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            for (const SourcePanels& body : model.field.panelBodies) {
+                if (body.contains(p)) continue;
+                const std::size_t n = body.size();
+                std::complex<double> direct{};
+                for (std::size_t k = 0; k < n; ++k) {
+                    const Vec2 z1 = body.vertices[k];
+                    const Vec2 z2 = body.vertices[(k + 1) % n];
+                    const std::complex<double> t = std::complex<double>(z2.x - z1.x, z2.y - z1.y) / length(z2 - z1);
+                    const std::complex<double> ratio = std::complex<double>(p.x - z1.x, p.y - z1.y) /
+                                                       std::complex<double>(p.x - z2.x, p.y - z2.y);
+                    direct += body.strengths[k] / (2.0 * pi) * std::conj(t) * std::log(ratio);
+                }
+                const double error = std::abs(body.complexVelocity(p) - direct);
+                (length(p - body.centre) > 2.0 * body.radius ? farError : nearError) =
+                    std::max(length(p - body.centre) > 2.0 * body.radius ? farError : nearError, error);
+                ++r.samples;
+            }
+        }
+    }
+    r.error = std::max(nearError, farError);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |W − W_direct| / V∞ over every node outside the bodies";
+    r.comparisons = {{"Nearer than 2 radii (groups of 16 panels: series, or panel by panel)", num(nearError), "0"},
+                     {"Farther (the body's Laurent series)", num(farError), "0"}};
+    r.note = std::format("{} evaluations, two bodies of 48 panels each (a square and an ellipse).", count(r.samples));
+    return finish(std::move(r));
+}
+
+VerificationResult panelField() {
+    VerificationResult r;
+    const Scene base = panelEllipseScene();
+    const EllipseFrame e = frameOf(std::get<PanelBody>(base.elements[1]));
+    std::vector<double> errors;
+    for (const int n : {50, 100, 200}) {
+        const FlowModel model = modelOf(withPanels(base, n));
+        double worst = 0.0;
+        int nodes = 0;
+        for (int j = 0; j < k_gridRows; ++j) {
+            for (int i = 0; i < k_gridColumns; ++i) {
+                const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+                if (!beyond(e, p, 1.25)) continue;
+                worst = std::max(worst, length(model.field.velocity(p) - exactEllipse(e, 1.0, 20.0 * deg, p)));
+                ++nodes;
+            }
+        }
+        errors.push_back(worst);
+        r.samples += nodes;
+        r.comparisons.push_back({std::format("N = {}: max |V − V_exact| / V∞", n), num(worst),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], worst))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-2;
+    r.errorLabel = "max |V − V_exact| / V∞ for N = 200, over the nodes outside 1.25 times the ellipse";
+    r.note = "The exact flow is the conformal map of the cylinder flow. The field converges only at first order, slower than "
+             "the surface Cp: constant-strength panels misjudge the strengths by O(1/N) (the 8-panel cylinder's first "
+             "strength is 18% above 2V∞), which shows in the body's far field.";
+    if (order(errors[1], errors[2]) < 0.8) {
+        r.error = inf;
+        r.note += " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelLifting() {
+    VerificationResult r;
+    std::vector<double> errors;
+    for (const int n : {64, 128, 256}) {
+        const Scene scene = withPanels(panelLiftingScene(), n);
+        const std::optional<double> cpError = panelCpError(scene, 2.0 * pi);
+        const FlowModel model = modelOf(scene);
+        const std::optional<BodySurface> body = panelSurfaceOf(model);
+        if (!cpError || !body) return unable("Expected one panel body.");
+        const BodyForces forces = bodyForces(*body, model);
+        const double liftError = std::abs(forces.lift - 4.0 * pi) / (4.0 * pi);
+        errors.push_back(std::max(*cpError, liftError));
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: L′/q∞ and max |Cp − Cp_exact|", n),
+                                 std::format("{:.5f}, {}", forces.lift, num(*cpError)), "2Γ/V∞ = 4π = 12.56637, 0"});
+    }
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "max of |Cp − Cp_exact| and the relative lift error, for N = 256";
+    r.note = "A vortex Γ = 2π at the centre of a source-panel circle: the panels cancel the stream's flow through the surface "
+             "and the vortex adds the circulation, which is the lifting cylinder. Both errors fall at second order. Nothing "
+             "in the source panel method fixes Γ; a vortex panel method sets it with the Kutta condition.";
+    if (order(errors[1], errors[2]) < 1.7) {
+        r.error = inf;
+        r.note += " The observed order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelBoundary() {
+    VerificationResult r;
+    // The boundary condition, on bodies that feel each other.
+    const FlowModel pair = modelOf(panelBluffScene());
+    if (pair.field.panelBodies.size() != 2) return unable("Expected two panel bodies.");
+    double residual = 0.0;
+    for (const SourcePanels& body : pair.field.panelBodies) {
+        for (std::size_t i = 0; i < body.size(); ++i) {
+            residual = std::max(residual, std::abs(dot(pair.field.velocity(body.controlPoints[i]), body.normals[i])));
+            ++r.samples;
+        }
+    }
+    r.comparisons.push_back({"Square and ellipse together: max |v·n| / V∞ at the control points", num(residual), "0"});
+
+    // d'Alembert, alone in the stream. Both shapes are symmetric about their centre, and so is the
+    // panel solution, so the pressure forces on opposite panels cancel exactly.
+    double force = 0.0;
+    double source = 0.0;
+    for (std::size_t b = 1; b <= 2; ++b) {
+        const Scene alone{.elements = {panelBluffScene().elements[0], panelBluffScene().elements[b]}};
+        const FlowModel model = modelOf(alone);
+        const std::optional<BodySurface> body = panelSurfaceOf(model);
+        if (!body) return unable("Expected one panel body.");
+        const BodyForces forces = bodyForces(*body, model);
+        const SourcePanels& panels = model.field.panelBodies.front();
+        const double net = std::abs(panels.netSource) / panels.perimeter();
+        force = std::max({force, std::abs(forces.drag) / forces.chord, std::abs(forces.lift) / forces.chord});
+        source = std::max(source, net);
+        r.comparisons.push_back({std::format("{} alone: D′/q∞, L′/q∞", b == 1 ? "Square" : "Ellipse at 15° to the stream"),
+                                 std::format("{}, {}", num(forces.drag), num(forces.lift)), "0, 0"});
+        r.comparisons.push_back({std::format("{} alone: Σλs / V∞ perimeter", b == 1 ? "Square" : "Ellipse"), num(net), "0"});
+    }
+    r.error = std::max({residual, force, source});
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |v·n| / V∞ at the control points, |D′|/q∞c and |L′|/q∞c alone, and |Σλs| / V∞ perimeter";
+    r.note = "The strengths come from a direct solve, so the condition holds to rounding at every control point. Σλs is the "
+             "check Anderson suggests: a closed body adds no fluid.";
+    return finish(std::move(r));
+}
+
+// An outline body that fits the bounding box of its points (as a drawn one does).
+PanelBody outlineOf(std::vector<Vec2> points, bool smooth, int panels, double angle = 0.0) {
+    Vec2 lo = points.front();
+    Vec2 hi = points.front();
+    for (const Vec2 p : points) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    PanelBody body{.shape = PanelShape::Custom, .position = (lo + hi) * 0.5, .semiAxisA = 0.5 * (hi.x - lo.x),
+                   .semiAxisB = 0.5 * (hi.y - lo.y), .angle = angle, .panels = panels};
+    body.outline = std::move(points);
+    body.smooth = smooth;
+    body.name = "points on an ellipse";
+    return body;
+}
+
+std::vector<Vec2> pointsOnEllipse(int count, double a, double b) {
+    std::vector<Vec2> points;
+    for (int k = 0; k < count; ++k) points.push_back({a * std::cos(2.0 * pi * k / count), b * std::sin(2.0 * pi * k / count)});
+    return points;
+}
+
+// A crescent with sharp horns, which no point inside it sees whole.
+std::vector<Vec2> crescentPoints() {
+    std::vector<Vec2> points;
+    for (int k = 0; k <= 40; ++k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({std::cos(t), std::sin(t)});
+    }
+    for (int k = 40; k >= 0; --k) {
+        const double t = pi * (0.15 + 1.7 * k / 40.0);
+        points.push_back({0.5 * std::cos(t) - 0.3, 0.5 * std::sin(t)});
+    }
+    return points;
+}
+
+Scene drawnEllipseScene() {
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 20.0 * deg},
+                                  outlineOf(pointsOnEllipse(200, 1.6, 0.8), true, 100, 25.0 * deg)}},
+                    showSurface);
+}
+Scene nacaScene() {
+    PanelBody airfoil{.shape = PanelShape::Naca, .semiAxisA = 1.5, .semiAxisB = 0.18, .angle = -5.0 * deg, .panels = 100};
+    airfoil.nacaCamber = 2;
+    airfoil.nacaPosition = 4;
+    return withPlot({.elements = {UniformFlow{}, airfoil}}, [](PlotSettings& p) {
+        p.showSurfacePressure = true;
+        p.showPanelStrengths = true;
+    });
+}
+Scene crescentScene() {
+    PanelBody body = outlineOf(crescentPoints(), false, 120);
+    body.name = "crescent";
+    return withPlot({.elements = {UniformFlow{.speed = 1.0, .angle = 10.0 * deg}, body}},
+                    [](PlotSettings& p) { p.showPanelStrengths = true; });
+}
+
+VerificationResult panelOutline() {
+    VerificationResult r;
+    // The smooth outline through the points: how far it strays from the ellipse they lie on.
+    for (const int count : {24, 48, 96}) {
+        const PanelBody body = outlineOf(pointsOnEllipse(count, 1.6, 0.8), true, 200);
+        double worst = 0.0;
+        for (const Vec2 p : panelVertices(body)) {
+            const Vec2 q = p - body.position;
+            worst = std::max(worst, std::abs(std::hypot(q.x / 1.6, q.y / 0.8) - 1.0));
+        }
+        r.comparisons.push_back({std::format("{} points: max |r/r_ellipse − 1| of the panel vertices", count), num(worst), "0"});
+    }
+    // The flow past it, with N panels laid along it.
+    const Scene base = drawnEllipseScene();
+    const PanelBody& body = std::get<PanelBody>(base.elements[1]);
+    const EllipseFrame e{.centre = body.position, .angle = body.angle, .a = 1.6, .b = 0.8};
+    std::vector<double> errors;
+    for (const int n : {50, 100, 200, 400}) {
+        const FlowModel model = modelOf(withPanels(base, n));
+        const std::optional<BodySurface> surface = panelSurfaceOf(model);
+        if (!surface) return unable("Expected one panel body.");
+        double worst = 0.0;
+        for (std::size_t k = 0; k < surface->points.size(); ++k) {
+            const double v = ellipseSurfaceSpeed(e, 1.0, 20.0 * deg, 0.0, eccentricAnomaly(e, surface->points[k]));
+            worst = std::max(worst, std::abs(surface->cp[k] - (1.0 - v * v)));
+        }
+        errors.push_back(worst);
+        r.samples += n;
+        r.comparisons.push_back({std::format("N = {}: max |Cp − Cp_exact|", n), num(worst),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], worst))
+                                                   : std::string("—")});
+    }
+    r.error = errors.back();
+    r.tolerance = 2.5e-3;
+    r.errorLabel = "max |Cp − Cp_exact| at the control points for N = 400";
+    r.note = "200 points on a 2:1 ellipse at 25°, joined by the smooth outline (a cubic spline), and N panels laid along it as "
+             "for a drawn body. The spline is fourth-order accurate in the point spacing. On this general spacing the "
+             "constant-strength panels converge at first order; the ellipse preset's equal steps in η are special (second "
+             "order).";
+    if (order(errors[2], errors[3]) < 0.8) {
+        r.error = inf;
+        r.note += " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelAirfoil() {
+    VerificationResult r;
+    // NACA 0012: the vertices on y = ±y_t(x) of the formula, written out here again.
+    const auto halfThickness = [](double t, double x) {
+        return t / 0.2 * (0.2969 * std::sqrt(x) - 0.1260 * x - 0.3516 * x * x + 0.2843 * std::pow(x, 3) - 0.1036 * std::pow(x, 4));
+    };
+    const PanelBody symmetric{.shape = PanelShape::Naca, .semiAxisA = 0.5, .semiAxisB = 0.06, .panels = 120, .nacaCamber = 0};
+    double geometry = 0.0;
+    for (const Vec2 p : panelVertices(symmetric)) {
+        const double x = p.x + 0.5; // chord 1 from the leading edge
+        geometry = std::max(geometry, std::abs(std::abs(p.y) - halfThickness(0.12, std::clamp(x, 0.0, 1.0))));
+    }
+    r.comparisons.push_back({"NACA 0012, 120 panels: max ||y| − y_t(x)| / c", num(geometry), "0"});
+
+    // NACA 2412 at 5°: a closed body adds no fluid, Σλs → 0.
+    std::vector<double> errors;
+    double drag = 0.0;
+    for (const int n : {50, 100, 200}) {
+        const FlowModel model = modelOf(withPanels(nacaScene(), n));
+        const std::optional<BodySurface> surface = panelSurfaceOf(model);
+        if (!surface) return unable("Expected one panel body.");
+        const SourcePanels& panels = model.field.panelBodies.front();
+        errors.push_back(std::abs(panels.netSource) / panels.perimeter());
+        drag = bodyForces(*surface, model).drag / 3.0;
+        r.samples += n;
+        r.comparisons.push_back({std::format("NACA 2412 at 5°, N = {}: Σλs / V∞ perimeter", n), num(errors.back()),
+                                 errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], errors.back()))
+                                                   : std::string("0")});
+    }
+    r.comparisons.push_back({"NACA 2412 at 5°, N = 200: c_d from Cp", num(drag), "0, slowly (see the note)"});
+    r.error = errors.back();
+    r.tolerance = 1e-3;
+    r.errorLabel = "|Σλs| / V∞ perimeter of the NACA 2412 for N = 200";
+    r.note = "An airfoil is not symmetric, so Σλs = 0 is a real test here, not a symmetry. Without circulation the flow has to "
+             "turn round the sharp trailing edge, where the exact speed is infinite: the force from Cp approaches d'Alembert's "
+             "zero only slowly, and the airfoil gets no lift. The Kutta condition, which needs vortex panels, removes that "
+             "singularity.";
+    if (geometry > 1e-12 || order(errors[1], errors[2]) < 0.8) {
+        r.error = inf;
+        r.note += geometry > 1e-12 ? " The vertices are off the NACA formula." : " The observed order is below 0.8.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult panelConcave() {
+    VerificationResult r;
+    const FlowModel model = modelOf(crescentScene());
+    if (model.field.panelBodies.size() != 1) return unable("Expected one panel body.");
+    const SourcePanels& body = model.field.panelBodies.front();
+    if (body.starShaped) return unable("The crescent should not be star-shaped.");
+    double residual = 0.0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        residual = std::max(residual, std::abs(dot(model.field.velocity(body.controlPoints[i]), body.normals[i])));
+    }
+    // Every node outside the body against the panels summed directly.
+    double sum = 0.0;
+    int nodes = 0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            if (body.contains(p)) continue;
+            std::complex<double> direct{};
+            for (std::size_t k = 0; k < body.size(); ++k) {
+                const Vec2 z1 = body.vertices[k];
+                const Vec2 z2 = body.vertices[(k + 1) % body.size()];
+                const std::complex<double> t = std::complex<double>(z2.x - z1.x, z2.y - z1.y) / length(z2 - z1);
+                direct += body.strengths[k] / (2.0 * pi) * std::conj(t) *
+                          std::log(std::complex<double>(p.x - z1.x, p.y - z1.y) / std::complex<double>(p.x - z2.x, p.y - z2.y));
+            }
+            sum = std::max(sum, std::abs(body.complexVelocity(p) - direct));
+            ++nodes;
+        }
+    }
+    r.samples = nodes + static_cast<int>(body.size());
+    r.error = std::max(residual, sum);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |v·n| / V∞ at the control points, and max |W − W_direct| / V∞ over every node outside";
+    r.comparisons = {{"Crescent, 120 panels: max |v·n| / V∞ at the control points", num(residual), "0"},
+                     {"Every node outside: max |W − W_direct| / V∞", num(sum), "0"},
+                     {"Inside the hollow of the crescent", model.field.inDomain({-0.3, 0.0}) ? "fluid" : "body", "fluid"}};
+    r.note = std::format("{} nodes. No point inside the crescent sees all of its outline, so its complex potential sums the "
+                         "panels one by one instead of by vertex; the velocity always does (in groups of 16 with their own "
+                         "series, and far away by the body's series).", count(nodes));
+    if (!model.field.inDomain({-0.3, 0.0})) r.error = inf;
+    return finish(std::move(r));
+}
+
+
+// --- Thin airfoils ------------------------------------------------------------------------
+
+// A thin airfoil of chord 2 at the origin, at angle of attack `alpha` in a unit stream along +x.
+Scene thinScene(CamberLine camber, double alpha, int panels, double arcCamber = 0.05) {
+    ThinAirfoil airfoil{.camber = camber, .chord = 2.0, .angle = -alpha, .panels = panels, .arcCamber = arcCamber};
+    return withPlot({.elements = {UniformFlow{}, airfoil}}, [](PlotSettings& p) {
+        p.showSurfacePressure = true;
+        p.showPanelStrengths = true;
+    });
+}
+Scene thinPlateScene() { return thinScene(CamberLine::Flat, 5.0 * deg, 40); }
+Scene thinNacaScene() { return thinScene(CamberLine::Naca, 4.0 * deg, 60); }
+Scene thinArcScene() { return thinScene(CamberLine::Arc, 3.0 * deg, 60); }
+Scene thinWithBodyScene() {
+    ThinAirfoil airfoil{.position = {-0.4, 0.6}, .chord = 2.0, .angle = -6.0 * deg, .panels = 50};
+    return withPlot({.elements = {UniformFlow{.speed = 1.2, .angle = 8.0 * deg}, airfoil,
+                                  PanelBody{.position = {1.4, -0.7}, .semiAxisA = 0.6, .semiAxisB = 0.6, .panels = 40},
+                                  Vortex{.circulation = 1.5, .position = {-2.2, -1.0}}, SymmetryWall{.point = {0.0, -2.0}}}},
+                    showSurface);
+}
+
+// The one airfoil of a scene, solved, with its loading.
+struct SolvedAirfoil {
+    FlowModel model;
+    AirfoilLoading loading;
+};
+std::optional<SolvedAirfoil> solveAirfoil(const Scene& scene) {
+    SolvedAirfoil s{.model = modelOf(scene), .loading = {}};
+    if (s.model.field.vortexSheets.size() != 1) return std::nullopt;
+    std::optional<AirfoilLoading> loading = airfoilLoading(s.model.field, 0, s.model.freeStream);
+    if (!loading) return std::nullopt;
+    s.loading = std::move(*loading);
+    return s;
+}
+
+Scene withSheetPanels(Scene scene, int panels) {
+    for (SceneElement& element : scene.elements) {
+        if (auto* airfoil = std::get_if<ThinAirfoil>(&element)) airfoil->panels = panels;
+    }
+    return scene;
+}
+
+std::string orderText(const std::vector<double>& errors) {
+    return errors.size() > 1 ? std::format("order {:.2f}", order(errors[errors.size() - 2], errors.back())) : std::string("—");
+}
+
+// The exact potential flow past a circular-arc camber line of chord c, camber h (a flat plate for
+// h = 0), with the Kutta condition, by the Joukowski map z = ζ + a²/ζ, c = 4a, of the circle through
+// ζ = ±a centred at i a tan β, tan β = 2h/c, radius R = a / cos β; Γ = 4πRV∞ sin(α + β). In the
+// airfoil's frame (chord along x, the middle of the chord at 0), stream V∞ at α to the chord.
+struct ArcFlow {
+    double a = 0.5;
+    double beta = 0.0;
+    double speed = 1.0;
+    double alpha = 0.0;
+
+    double radius() const { return a / std::cos(beta); }
+    double circulation() const { return 4.0 * pi * radius() * speed * std::sin(alpha + beta); }
+    double cl() const { return 2.0 * circulation() / (speed * 4.0 * a); }
+
+    std::complex<double> w(std::complex<double> z) const {
+        const std::complex<double> centre{0.0, a * std::tan(beta)};
+        const std::complex<double> root = std::sqrt(z * z - 4.0 * a * a);
+        const std::complex<double> z1 = 0.5 * (z + root);
+        const std::complex<double> z2 = 0.5 * (z - root);
+        const std::complex<double> zeta = std::abs(z1 - centre) >= std::abs(z2 - centre) ? z1 : z2; // outside the circle
+        const double r = radius();
+        const std::complex<double> u = zeta - centre;
+        const std::complex<double> dF = speed * std::polar(1.0, -alpha) - speed * std::polar(1.0, alpha) * r * r / (u * u) +
+                                        std::complex<double>(0.0, circulation() / (2.0 * pi)) / u;
+        return dF / (1.0 - a * a / (zeta * zeta));
+    }
+};
+
+VerificationResult thinPlateLift() {
+    VerificationResult r;
+    const double alpha = 5.0 * deg;
+    const double exact = 2.0 * pi * std::sin(alpha);
+    std::vector<double> errors;
+    double slopeError = 0.0;
+    double zeroLift = 0.0;
+    double moment = 0.0;
+    for (const int n : {20, 40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinPlateScene(), n));
+        if (!s || !s->loading.liftSlope || !s->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+        errors.push_back(std::abs(s->loading.clKuttaJoukowski - exact) / exact);
+        slopeError = std::abs(*s->loading.liftSlope - 2.0 * pi * std::cos(alpha)) / (2.0 * pi * std::cos(alpha));
+        zeroLift = std::abs(*s->loading.alphaZeroLift);
+        moment = s->loading.cmQuarter;
+        r.samples += n;
+        r.comparisons.push_back({std::format("α = 5°, N = {}: c_l", n), std::format("{:.7f}", s->loading.clKuttaJoukowski),
+                                 std::format("2π sin α = {:.7f}, {}", exact, orderText(errors))});
+    }
+    r.comparisons.push_back({"N = 320: dc_l/dα (per radian)", "", std::format("2π cos α = {:.6f}, error {}", 2.0 * pi * std::cos(alpha),
+                                                                               num(slopeError))});
+    r.comparisons.push_back({"N = 320: α_L0, c_m,c/4", std::format("{}, {}", num(zeroLift), num(moment)), "0, 0"});
+    const std::optional<SolvedAirfoil> small = solveAirfoil(thinScene(CamberLine::Flat, 2.0 * deg, 320));
+    if (!small) return unable("Expected one airfoil.");
+    r.comparisons.push_back({"α = 2°, N = 320: c_l", std::format("{:.7f}", small->loading.clKuttaJoukowski),
+                             std::format("2π sin α = {:.7f}; thin-airfoil theory 2πα = {:.7f}", 2.0 * pi * std::sin(2.0 * deg),
+                                         2.0 * pi * 2.0 * deg)});
+    r.error = std::max(errors.back(), slopeError);
+    r.tolerance = 1e-5;
+    r.errorLabel = "|c_l − 2π sin α| / 2π sin α and the lift slope's relative error, for N = 320";
+    r.note = "The vortex panels lie on the plate itself and are solved with its exact boundary condition, so they converge to the "
+             "exact potential flow, c_l = 2π sin α, at second order (the error falls 4× each time N doubles). Thin-airfoil theory "
+             "linearizes that to 2πα, a relative difference of α²/6: 4·10⁻⁴ at 5°, 2·10⁻⁴ at 2°. The plate's centre of pressure "
+             "is at the quarter chord (c_m,c/4 = 0) and α_L0 = 0.";
+    if (order(errors[3], errors[4]) < 1.8 || zeroLift > 1e-12 || std::abs(moment) > 1e-5) {
+        r.error = inf;
+        r.note += " The order, α_L0 or c_m is off.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinPlateStrength() {
+    VerificationResult r;
+    const double alpha = 5.0 * deg;
+    const double scale = 2.0 * std::sin(alpha); // 2 V∞ sin α
+    std::vector<double> errors;
+    std::vector<double> trailing;
+    double kutta = 0.0;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinPlateScene(), n));
+        if (!s) return unable("Expected one airfoil.");
+        const VortexSheet& sheet = s->model.field.vortexSheets.front();
+        double worst = 0.0;
+        for (std::size_t k = 0; k < sheet.gamma.size(); ++k) {
+            // Along the plate from the leading edge, written out from the vertices.
+            const double x = length(sheet.vertices[k] - sheet.vertices.front()) / 2.0;
+            if (x < 0.05) continue;
+            const double exact = scale * std::sqrt((1.0 - x) / x);
+            worst = std::max(worst, std::abs(sheet.gamma[k] - exact) / scale);
+            ++r.samples;
+        }
+        errors.push_back(worst);
+        trailing.push_back(std::abs(s->loading.trailingEdgeGamma));
+        kutta = std::max(kutta, std::abs(sheet.gamma.back()));
+        r.comparisons.push_back({std::format("N = {}: max |γ − γ_exact| / 2V∞ sin α, x/c ≥ 0.05", n), num(worst), orderText(errors)});
+    }
+    r.comparisons.push_back({"γ at the trailing edge (every N)", num(kutta), "0 (Kutta)"});
+    r.comparisons.push_back({"γ / V∞ at the last control point, N = 40 and 320", std::format("{}, {}", num(trailing.front()),
+                                                                                            num(trailing.back())),
+                             "→ 0 like √(c − x), first order"});
+    r.error = errors.back();
+    r.tolerance = 2e-3;
+    r.errorLabel = "max |γ − γ_exact| / 2V∞ sin α over the vertices with x/c ≥ 0.05, for N = 320";
+    r.note = "The exact plate has γ(x) = 2V∞ sin α √((c − x)/x): infinite at the leading edge, where the panels keep it finite "
+             "(the largest value there grows with N), and 0 at the trailing edge. Away from the leading edge the panels converge "
+             "at second order. γ(TE) = 0 is the Kutta condition, set on the trailing-edge vertex; at the last control point γ "
+             "falls like √(c − x).";
+    if (kutta != 0.0 || order(errors[2], errors[3]) < 1.7 || trailing.back() >= trailing.front()) {
+        r.error = inf;
+        r.note += " The Kutta condition or the order is off.";
+    }
+    return finish(std::move(r));
+}
+
+// Thin-airfoil theory for the NACA 4-digit mean line of camber m at p, written out again: the
+// integrals in θ₀ by Gauss–Legendre on [0, θ_p] and [θ_p, π] (dz/dx is smooth on each, with a kink at
+// x = p). Returns ∫₀^π dz/dx cos nθ₀ dθ₀ for n = 0 .. 3 and ∫ dz/dx (cos θ₀ − 1) dθ₀.
+std::array<double, 5> nacaMeanLineIntegrals(double m, double p) {
+    const auto slope = [m, p](double x) {
+        return x < p ? 2.0 * m / (p * p) * (p - x) : 2.0 * m / ((1.0 - p) * (1.0 - p)) * (p - x);
+    };
+    // 20-point Gauss–Legendre, nodes from Newton on P_20.
+    constexpr int points = 20;
+    std::array<double, points> node{};
+    std::array<double, points> weight{};
+    for (int i = 0; i < points; ++i) {
+        double x = std::cos(pi * (i + 0.75) / (points + 0.5));
+        double dp = 0.0;
+        for (int it = 0; it < 60; ++it) {
+            double p0 = 1.0;
+            double p1 = x;
+            for (int k = 2; k <= points; ++k) {
+                const double p2 = ((2 * k - 1) * x * p1 - (k - 1) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = points * (x * p1 - p0) / (x * x - 1.0);
+            x -= p1 / dp;
+        }
+        node[static_cast<std::size_t>(i)] = x;
+        weight[static_cast<std::size_t>(i)] = 2.0 / ((1.0 - x * x) * dp * dp);
+    }
+    const double thetaP = std::acos(1.0 - 2.0 * p);
+    std::array<double, 5> sums{};
+    for (const auto& [a, b] : {std::pair{0.0, thetaP}, std::pair{thetaP, pi}}) {
+        for (int i = 0; i < points; ++i) {
+            const double theta = 0.5 * (a + b) + 0.5 * (b - a) * node[static_cast<std::size_t>(i)];
+            const double w = 0.5 * (b - a) * weight[static_cast<std::size_t>(i)];
+            const double f = slope(0.5 * (1.0 - std::cos(theta)));
+            for (int n = 0; n < 4; ++n) sums[static_cast<std::size_t>(n)] += w * f * std::cos(n * theta);
+            sums[4] += w * f * (std::cos(theta) - 1.0);
+        }
+    }
+    return sums;
+}
+
+VerificationResult thinNaca() {
+    VerificationResult r;
+    const double alpha = 4.0 * deg;
+    // Thin-airfoil theory, written out.
+    const std::array<double, 5> integrals = nacaMeanLineIntegrals(0.02, 0.4);
+    const double a0 = alpha - integrals[0] / pi;
+    const double a1 = 2.0 * integrals[1] / pi;
+    const double a2 = 2.0 * integrals[2] / pi;
+    const double a3 = 2.0 * integrals[3] / pi;
+    const double zeroLift = -integrals[4] / pi;
+    const double moment = 0.25 * pi * (a2 - a1);
+    const ThinAirfoilTheory program = thinAirfoilTheory(ThinAirfoil{.camber = CamberLine::Naca}, alpha);
+    const double theoryError = std::max({std::abs(program.A[0] - a0), std::abs(program.A[1] - a1), std::abs(program.A[2] - a2),
+                                         std::abs(program.A[3] - a3), std::abs(program.alphaZeroLift - zeroLift),
+                                         std::abs(program.cmQuarter - moment)});
+    r.comparisons.push_back({"Theory at 4°: A₀, A₁, A₂, A₃",
+                             std::format("{:.6f}, {:.6f}, {:.6f}, {:.6f}", program.A[0], program.A[1], program.A[2], program.A[3]),
+                             std::format("{:.6f}, {:.6f}, {:.6f}, {:.6f}", a0, a1, a2, a3)});
+    r.comparisons.push_back({"Theory: α_L0, c_m,c/4", std::format("{:.4f}°, {:.5f}", program.alphaZeroLift / deg, program.cmQuarter),
+                             std::format("{:.4f}°, {:.5f} (Anderson: −2.077°, −0.0532)", zeroLift / deg, moment)});
+
+    std::vector<double> zero;
+    std::vector<double> cm;
+    std::vector<double> zeroSteps;
+    std::vector<double> cmSteps;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinNacaScene(), n));
+        if (!s || !s->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+        zero.push_back(*s->loading.alphaZeroLift);
+        cm.push_back(s->loading.cmQuarter);
+        if (zero.size() > 1) {
+            zeroSteps.push_back(std::abs(zero[zero.size() - 1] - zero[zero.size() - 2]));
+            cmSteps.push_back(std::abs(cm[cm.size() - 1] - cm[cm.size() - 2]));
+        }
+        r.samples += n;
+        r.comparisons.push_back({std::format("Panels, N = {}: α_L0, c_m,c/4", n), std::format("{:.5f}°, {:.6f}", zero.back() / deg, cm.back()),
+                                 zeroSteps.size() > 1 ? std::format("change from N/2: {}, {}", orderText(zeroSteps), orderText(cmSteps))
+                                                      : std::string("—")});
+    }
+    const double zeroDifference = std::abs(zero.back() - zeroLift) / std::abs(zeroLift);
+    const double cmDifference = std::abs(cm.back() - moment) / std::abs(moment);
+    r.comparisons.push_back({"N = 320 against thin-airfoil theory: relative difference of α_L0, c_m,c/4",
+                             std::format("{}, {}", num(zeroDifference), num(cmDifference)), "of order (dz/dx)² ≤ 0.01"});
+    r.error = std::max(zeroDifference, cmDifference);
+    r.tolerance = 1e-2;
+    r.errorLabel = "relative difference of α_L0 and c_m,c/4 between the panels (N = 320) and thin-airfoil theory";
+    r.note = "The theory's coefficients are computed by the program in closed form and here again by Gauss–Legendre quadrature "
+             "(they agree to rounding). The panels apply the boundary condition on the curved camber line itself, which the "
+             "theory moves onto the chord: what is left between them is the linearization, of the order of the camber line's "
+             "slope squared (at most 0.1² for the NACA 2412). The panels themselves converge at second order: the change from "
+             "one N to the next falls 4× each time.";
+    if (theoryError > 1e-12 || order(zeroSteps[1], zeroSteps[2]) < 1.7 || order(cmSteps[1], cmSteps[2]) < 1.7) {
+        r.error = inf;
+        r.note += theoryError > 1e-12 ? " The program's theory differs from the quadrature." : " The order is below 1.7.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinArc() {
+    VerificationResult r;
+    const double alpha = 3.0 * deg;
+    const ArcFlow exact{.a = 0.5, .beta = std::atan(2.0 * 0.05), .speed = 1.0, .alpha = alpha};
+    std::vector<double> clErrors;
+    std::vector<double> fieldErrors;
+    for (const int n : {40, 80, 160, 320}) {
+        const std::optional<SolvedAirfoil> s = solveAirfoil(withSheetPanels(thinArcScene(), n));
+        if (!s) return unable("Expected one airfoil.");
+        clErrors.push_back(std::abs(s->loading.clKuttaJoukowski - exact.cl()) / exact.cl());
+        // Every node at least 0.1c from the camber line, against the conformal map (the airfoil is
+        // at the origin, turned by -α).
+        const VortexSheet& sheet = s->model.field.vortexSheets.front();
+        double worst = 0.0;
+        for (int j = 0; j < k_gridRows; ++j) {
+            for (int i = 0; i < k_gridColumns; ++i) {
+                const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+                if (sheet.distanceTo(p) < 0.2) continue;
+                const Vec2 local = turned(p, alpha);
+                const std::complex<double> w = exact.w({local.x, local.y}) * std::polar(1.0, alpha);
+                worst = std::max(worst, std::abs(s->model.field.complexVelocity(p) - w));
+                if (n == 320) ++r.samples;
+            }
+        }
+        fieldErrors.push_back(worst);
+        r.comparisons.push_back({std::format("N = {}: c_l, max |V − V_exact| / V∞ (≥ 0.1c away)", n),
+                                 std::format("{:.7f}, {}", s->loading.clKuttaJoukowski, num(worst)),
+                                 std::format("{:.7f}; {}, {}", exact.cl(), orderText(clErrors), orderText(fieldErrors))});
+    }
+    const std::optional<SolvedAirfoil> fine = solveAirfoil(withSheetPanels(thinArcScene(), 320));
+    if (!fine || !fine->loading.alphaZeroLift) return unable("Expected one airfoil in a uniform stream.");
+    r.comparisons.push_back({"N = 320: α_L0", std::format("{:.5f}°", *fine->loading.alphaZeroLift / deg),
+                             std::format("−β = {:.5f}° (thin-airfoil theory −2h/c = {:.5f}°)", -exact.beta / deg, -0.1 / deg)});
+    r.comparisons.push_back({"Thin-airfoil theory's c_l: on the arc's own slope, and on a parabola of the same camber",
+                             std::format("{:.7f}", fine->loading.theory.cl), std::format("2π(α + 2h/c) = {:.7f}", 2.0 * pi * (alpha + 0.1))});
+    r.error = std::max(clErrors.back(), fieldErrors.back());
+    r.tolerance = 1e-4;
+    r.errorLabel = "|c_l − c_l,exact| / c_l,exact and max |V − V_exact| / V∞ at least 0.1c from the arc, for N = 320";
+    r.note = "The Joukowski map z = ζ + a²/ζ turns a circle through ζ = ±a, centred at i a tan β, into a circular arc of chord "
+             "4a and camber h/c = ½ tan β; with the Kutta condition at the trailing edge, c_l = 2π sin(α + β) / cos β and "
+             "α_L0 = −β, exactly. The panels converge to it at second order, at the surface and away from it; thin-airfoil "
+             "theory, 2π(α + 2h/c), is the linearization.";
+    if (order(clErrors[2], clErrors[3]) < 1.7 || order(fieldErrors[2], fieldErrors[3]) < 0.9 ||
+        std::abs(*fine->loading.alphaZeroLift + exact.beta) > 1e-5) {
+        r.error = inf;
+        r.note += " The order or α_L0 is off.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinKuttaJoukowski() {
+    VerificationResult r;
+    const std::optional<SolvedAirfoil> naca = solveAirfoil(withSheetPanels(thinNacaScene(), 80));
+    const std::optional<SolvedAirfoil> plate = solveAirfoil(withSheetPanels(thinPlateScene(), 80));
+    if (!naca || !plate) return unable("Expected one airfoil.");
+    const VortexSheet& sheet = naca->model.field.vortexSheets.front();
+    const double gamma = sheet.circulation;
+
+    // ∮ V·dl counter-clockwise on a circle around the airfoil: −Γ (Γ > 0 is clockwise).
+    double worst = 0.0;
+    for (const double radius : {1.2, 4.0}) { // inside and beyond the Laurent series' two radii
+        constexpr int n = 4096;
+        double circulation = 0.0;
+        for (int k = 0; k < n; ++k) {
+            const double t = 2.0 * pi * k / n;
+            const Vec2 tangent{-std::sin(t), std::cos(t)};
+            circulation += dot(naca->model.field.velocity(Vec2{std::cos(t), std::sin(t)} * radius), tangent) * radius * 2.0 * pi / n;
+        }
+        worst = std::max(worst, std::abs(-circulation - gamma) / gamma);
+        r.samples += n;
+        r.comparisons.push_back({std::format("−∮ V·dl on the circle r = {}", radius), std::format("{:.12f}", -circulation),
+                                 std::format("Γ = ∫γ ds = {:.12f}", gamma)});
+    }
+    // Blasius on the same circles: L′ = ρV∞Γ across the stream, no drag.
+    for (const double radius : {1.2, 4.0}) {
+        const Complex f = blasiusForce(naca->model.field, {}, radius);
+        const double drag = f.real();
+        const double lift = -f.imag();
+        worst = std::max({worst, std::abs(lift - gamma) / gamma, std::abs(drag) / gamma});
+        r.samples += 4096;
+        r.comparisons.push_back({std::format("Blasius on r = {}: (D′, L′) / ρ", radius), std::format("({}, {:.12f})", num(drag), lift),
+                                 std::format("(0, V∞Γ = {:.12f})", gamma)});
+    }
+    // Lift from ΔCp along the chord: on a plate it is the Kutta–Joukowski lift; with camber dx = ds cos ε.
+    const double plateDifference =
+        std::abs(plate->loading.clPressure - plate->loading.clKuttaJoukowski) / plate->loading.clKuttaJoukowski;
+    worst = std::max(worst, plateDifference);
+    r.comparisons.push_back({"Flat plate at 5°: c_l from ∫ΔCp d(x/c) and 2Γ/(V∞c)",
+                             std::format("{:.12f}, {:.12f}", plate->loading.clPressure, plate->loading.clKuttaJoukowski), "equal"});
+    double bound = 0.0; // (2 / V∞c) max(1 − cos ε) ∫|γ| ds
+    double integral = 0.0;
+    double slope = 0.0;
+    for (std::size_t j = 0; j < sheet.size(); ++j) {
+        const Vec2 d = sheet.vertices[j + 1] - sheet.vertices[j];
+        slope = std::max(slope, 1.0 - std::abs(dot(d, chordDirection(sheet.airfoil))) / length(d));
+        integral += 0.5 * (std::abs(sheet.gamma[j]) + std::abs(sheet.gamma[j + 1])) * length(d);
+    }
+    bound = 2.0 * slope * integral / 2.0;
+    const double nacaDifference = std::abs(naca->loading.clPressure - naca->loading.clKuttaJoukowski);
+    r.comparisons.push_back({"NACA 2412 at 4°: c_l from ΔCp and 2Γ/(V∞c)",
+                             std::format("{:.6f}, {:.6f}", naca->loading.clPressure, naca->loading.clKuttaJoukowski),
+                             std::format("differ by {} ≤ (2/V∞c) max(1 − cos ε) ∫|γ| ds = {}", num(nacaDifference), num(bound))});
+    r.error = worst;
+    r.tolerance = 1e-10;
+    r.errorLabel = "relative errors of ∮ V·dl against Γ, of the Blasius lift against ρV∞Γ, the Blasius drag, and of the plate's "
+                   "ΔCp lift against Kutta–Joukowski";
+    r.note = "The circulation and the force come from the velocity the plot uses, on circles around the airfoil (the trapezoidal "
+             "rule, which converges geometrically there): close in, where the panels are summed, and far out, where the Laurent "
+             "series is. ∮ W² dz only sees the 1/z term of W, so the whole force is the Kutta–Joukowski lift ρV∞Γ, with no drag "
+             "(the leading-edge suction included). Thin-airfoil theory integrates ΔCp = 2γ/V∞ along the chord; γ is per unit "
+             "length of the camber line, so with camber that falls short of 2Γ/(V∞c) by terms of order ε², within the bound.";
+    if (nacaDifference > bound) {
+        r.error = inf;
+        r.note += " The ΔCp lift is outside the bound.";
+    }
+    return finish(std::move(r));
+}
+
+VerificationResult thinSums() {
+    // The Biot–Savart integral W = (i/2π) ∫ γ(s) ds / (z − z(s)) along each panel, by 64-point
+    // Gauss–Legendre quadrature, against the program's closed form (and Laurent series far away).
+    const FlowModel model = modelOf(withSheetPanels(thinNacaScene(), 80));
+    if (model.field.vortexSheets.size() != 1) return unable("Expected one airfoil.");
+    const VortexSheet& sheet = model.field.vortexSheets.front();
+    constexpr int points = 64;
+    std::array<double, points> node{};
+    std::array<double, points> weight{};
+    for (int i = 0; i < points; ++i) {
+        double x = std::cos(pi * (i + 0.75) / (points + 0.5));
+        double dp = 0.0;
+        for (int it = 0; it < 60; ++it) {
+            double p0 = 1.0;
+            double p1 = x;
+            for (int k = 2; k <= points; ++k) {
+                const double p2 = ((2 * k - 1) * x * p1 - (k - 1) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = points * (x * p1 - p0) / (x * x - 1.0);
+            x -= p1 / dp;
+        }
+        node[static_cast<std::size_t>(i)] = 0.5 * (1.0 + x);
+        weight[static_cast<std::size_t>(i)] = 1.0 / ((1.0 - x * x) * dp * dp);
+    }
+    VerificationResult r;
+    double nearError = 0.0;
+    double farError = 0.0;
+    for (int j = 0; j < k_gridRows; ++j) {
+        for (int i = 0; i < k_gridColumns; ++i) {
+            const Vec2 p = k_view.min + Vec2{k_view.size().x * i / (k_gridColumns - 1.0), k_view.size().y * j / (k_gridRows - 1.0)};
+            if (sheet.distanceTo(p) < 0.1) continue;
+            std::complex<double> direct{};
+            for (std::size_t k = 0; k < sheet.size(); ++k) {
+                const Vec2 a = sheet.vertices[k];
+                const Vec2 b = sheet.vertices[k + 1];
+                for (int q = 0; q < points; ++q) {
+                    const double t = node[static_cast<std::size_t>(q)];
+                    const Vec2 s = a + (b - a) * t;
+                    const double g = sheet.gamma[k] + (sheet.gamma[k + 1] - sheet.gamma[k]) * t;
+                    direct += weight[static_cast<std::size_t>(q)] * length(b - a) * g / std::complex<double>(p.x - s.x, p.y - s.y);
+                }
+            }
+            direct *= std::complex<double>(0.0, 1.0 / (2.0 * pi));
+            const double error = std::abs(sheet.complexVelocity(p) - direct);
+            double& worst = length(p - sheet.centre) > 2.0 * sheet.radius ? farError : nearError;
+            worst = std::max(worst, error);
+            ++r.samples;
+        }
+    }
+    r.error = std::max(nearError, farError);
+    r.tolerance = k_exactTolerance;
+    r.errorLabel = "max |W − W_quadrature| / V∞ over every node 0.05c or more from the sheet";
+    r.comparisons = {{"Nearer than 2 radii (groups of panels: series, or panel by panel)", num(nearError), "0"},
+                     {"Farther (the sheet's Laurent series)", num(farError), "0"}};
+    r.note = std::format("{} nodes, a NACA 2412 camber line of 80 panels. Each panel's γ varies linearly, and its velocity is "
+                         "the logarithm formula (i e^(−iθ)/2π)[γ₁Λ + (γ₂ − γ₁)(Λζ/L − 1)] with Λ = log((z − z₁)/(z − z₂)), "
+                         "taken as log1p so that it keeps its digits far from the short panels at the leading edge; groups of "
+                         "16 panels far enough from the node use their own Laurent series.",
+                         count(r.samples));
+    return finish(std::move(r));
+}
+
+VerificationResult thinBoundary() {
+    VerificationResult r;
+    const FlowModel model = modelOf(thinWithBodyScene());
+    if (model.field.vortexSheets.size() != 1 || model.field.panelBodies.size() != 1) {
+        return unable("Expected an airfoil and a panel body.");
+    }
+    const VortexSheet& sheet = model.field.vortexSheets.front();
+    const SourcePanels& body = model.field.panelBodies.front();
+    double scale = 0.0;
+    double sheetResidual = 0.0;
+    double bodyResidual = 0.0;
+    for (std::size_t i = 0; i < sheet.size(); ++i) {
+        const Vec2 v = model.field.velocity(sheet.controlPoints[i]);
+        sheetResidual = std::max(sheetResidual, std::abs(dot(v, sheet.normals[i])));
+        scale = std::max(scale, length(v));
+        ++r.samples;
+    }
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const Vec2 v = model.field.velocity(body.controlPoints[i]);
+        bodyResidual = std::max(bodyResidual, std::abs(dot(v, body.normals[i])));
+        scale = std::max(scale, length(v));
+        ++r.samples;
+    }
+    // Just off the sheet on either side: the normal velocity is continuous across it, the tangential
+    // one jumps by γ.
+    double jump = 0.0;
+    for (std::size_t i = 0; i < sheet.size(); ++i) {
+        // 10⁻⁷ of the panel's length off it: the velocity there differs from the limit by about that
+        // fraction of γ.
+        const Vec2 off = sheet.normals[i] * (1e-7 * sheet.lengths[i]);
+        const Vec2 above = model.field.velocity(sheet.controlPoints[i] + off);
+        const Vec2 below = model.field.velocity(sheet.controlPoints[i] - off);
+        jump = std::max(jump, std::abs(dot(above - below, sheet.tangents[i]) - sheet.strengthAt(i)) / std::abs(sheet.strengthAt(i)));
+    }
+    // The airfoil alone: the body and the rest change its circulation.
+    Scene alone = thinWithBodyScene();
+    alone.elements.resize(2);
+    const FlowModel aloneModel = modelOf(alone);
+    r.comparisons = {{"Airfoil: max |v·n| / max|V| at the control points", num(sheetResidual / scale), "0"},
+                     {"Source-panel circle: max |v·n| / max|V|", num(bodyResidual / scale), "0"},
+                     {"Across the sheet, 10⁻⁷ panel lengths each side: max |Δv_t − γ| / |γ|", num(jump), "0, to about 10⁻⁷"},
+                     {"Γ with the circle, the vortex and the wall image, and alone",
+                      std::format("{:.6f}, {:.6f}", sheet.circulation, aloneModel.field.vortexSheets.front().circulation),
+                      "they differ: the airfoil feels the rest"}};
+    r.error = std::max(sheetResidual, bodyResidual) / scale;
+    r.tolerance = k_exactTolerance * 10.0;
+    r.errorLabel = "max |v·n| / max|V| at every control point of the airfoil and the body";
+    r.note = "The airfoil, a source-panel circle, a vortex and its image in a wall: one dense system for the vortex and the source "
+             "panels together, against the rest of the flow. A direct solve, so the condition holds to rounding at every "
+             "control point.";
+    if (jump > 1e-5 || std::abs(sheet.circulation - aloneModel.field.vortexSheets.front().circulation) < 1e-6) {
+        r.error = inf;
+        r.note += " The jump across the sheet is off, or the airfoil does not feel the rest.";
+    }
+    return finish(std::move(r));
+}
+
+
 // --- The list -----------------------------------------------------------------------------
 
 constexpr const char* k_foundations = "Foundations";
@@ -1964,6 +3038,8 @@ constexpr const char* k_walls = "Symmetry walls";
 constexpr const char* k_forces = "Pressure and forces";
 constexpr const char* k_lines = "Streamlines and equipotentials";
 constexpr const char* k_tracers = "Particles and dye";
+constexpr const char* k_panels = "Panel methods";
+constexpr const char* k_thin = "Thin airfoils";
 
 const VerificationCheck k_checks[] = {
     {k_foundations, "Laplace's equation",
@@ -2163,6 +3239,103 @@ const VerificationCheck k_checks[] = {
      "apart for a release interval Δt, so the spacing shows the speed.",
      "Run the dye system in a uniform flow and past a lifting cylinder, and check positions, spacing and ψ along the streaks.",
      dyeScene, dyeStreaks},
+
+    {k_panels, "Source panels on a cylinder",
+     "Source sheets of strength λ around a circle in a stream give Cp = 1 − 4 sin²θ on it. Cut into N straight panels of "
+     "constant strength, the 8-panel solution has λ/2πV∞ = 0.3765 on the panel facing the stream (Anderson's example).",
+     "Solve 8, 9 and 40 panels, the last at 30° incidence off the origin, and compare Cp at every control point.",
+     panelCylinderScene, panelCylinder},
+    {k_panels, "Source panels on an ellipse",
+     "The flow past an ellipse is the cylinder flow under the map z = ζ + k²/ζ: on the surface V = V∞ (a + b) |sin(η − α)| / "
+     "√(a² sin²η + b² cos²η).",
+     "A 4:1 ellipse at 20° to the stream with 32 to 256 panels: Cp at every control point, and the order of convergence.",
+     panelEllipseScene, panelEllipse},
+    {k_panels, "Source strengths",
+     "A continuous source sheet on an ellipse that makes the exact flow outside has λ = −v·n of the uniform flow it leaves "
+     "inside, (2V∞R cos α / a, 2V∞R sin α / b) with R = (a + b)/2. On a circle that is λ = −2V∞ cos(θ − α).",
+     "Compare the strength of every panel of a circle and of a 4:1 ellipse, with 50 to 400 panels, and the order of "
+     "convergence.",
+     panelEllipseScene, panelStrengths},
+    {k_panels, "Panel sums, near and far",
+     "Each panel contributes W = (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)), θ the panel's direction. The program sums groups "
+     "of 16 panels by Laurent series of their own where a point is far enough from them, and beyond two body radii one "
+     "series for the whole body.",
+     "Sum every panel directly at every node outside two bodies (a square and an ellipse) and compare.", panelBluffScene,
+     panelSums},
+    {k_panels, "Flow field around a panel body",
+     "Away from the surface too the panel solution must approach the exact flow, F = V∞ (a + b) cosh(w − ξ₀ − iα) with "
+     "z = c cosh w.",
+     "Compare every node outside 1.25 times the ellipse with the exact velocity, for 50, 100 and 200 panels.",
+     panelEllipseScene, panelField},
+    {k_panels, "Lifting cylinder from source panels",
+     "Source panels carry no circulation, but a vortex inside the body gives it some: around a circle that is the lifting "
+     "cylinder, Cp = 1 − (2 sin θ + Γ/2πaV∞)² and L′ = ρV∞Γ.",
+     "A vortex Γ = 2π inside a panel circle, with 64 to 256 panels: Cp at the control points and the lift from it.",
+     panelLiftingScene, panelLifting},
+    {k_panels, "No flow through the panels",
+     "The strengths are chosen so that no fluid crosses any panel at its control point. A closed body adds no fluid "
+     "(Σλs = 0) and, alone in a stream, feels no force (d'Alembert).",
+     "Check v·n at every control point of a square and an ellipse that feel each other, and the force and Σλs of each "
+     "alone.",
+     panelBluffScene, panelBoundary},
+    {k_panels, "Drawn outlines",
+     "A drawn or imported body is the smooth curve through its points (a cubic spline), with N panels laid along it. Through "
+     "points on an ellipse, that curve must be the ellipse, and its flow the ellipse's.",
+     "Join 24 to 96 points on a 2:1 ellipse and measure how far the panels stray from it; then compare Cp with the exact "
+     "ellipse for 50 to 400 panels.",
+     drawnEllipseScene, panelOutline},
+    {k_panels, "NACA 4-digit airfoils",
+     "The NACA 4-digit sections are y = ±y_t(x) about the camber line, y_t = 5t (0.2969√x − 0.1260x − 0.3516x² + 0.2843x³ − "
+     "0.1036x⁴). A closed body adds no fluid: Σλs = 0.",
+     "Check the vertices of a NACA 0012 against the formula, and Σλs on a NACA 2412 at 5° for 50 to 200 panels.", nacaScene,
+     panelAirfoil},
+    {k_panels, "Bodies that are not star-shaped",
+     "Panels sum the same way for any closed shape, concave or not: W = Σ (λ/2π) e^(−iθ) log((z − z₁)/(z − z₂)).",
+     "A crescent, which no point inside it sees whole: check v·n at its control points and the velocity at every node "
+     "outside against the panels summed directly.",
+     crescentScene, panelConcave},
+
+    {k_thin, "Flat plate: lift",
+     "A flat plate in potential flow with the Kutta condition has Γ = πcV∞ sin α, so c_l = 2π sin α, lift slope 2π cos α, "
+     "α_L0 = 0 and c_m,c/4 = 0. Thin-airfoil theory gives 2πα, the same to first order in α.",
+     "Solve a vortex-sheet plate at 5° with 20 to 320 panels; measure c_l, the order, the lift slope, α_L0 and c_m, and c_l at "
+     "2° against both formulas.",
+     thinPlateScene, thinPlateLift},
+    {k_thin, "Flat plate: vortex strength and Kutta condition",
+     "On a flat plate γ(x) = 2V∞ sin α √((c − x)/x): infinite at the leading edge and 0 at the trailing edge, where the Kutta "
+     "condition makes the flow leave smoothly.",
+     "Compare γ at every vertex from x/c = 0.05 on, for 40 to 320 panels, and look at γ at and next to the trailing edge.",
+     thinPlateScene, thinPlateStrength},
+    {k_thin, "NACA 2412 mean line",
+     "Thin-airfoil theory: A₀ = α − (1/π)∫ dz/dx dθ₀, Aₙ = (2/π)∫ dz/dx cos nθ₀ dθ₀, α_L0 = −(1/π)∫ dz/dx (cos θ₀ − 1) dθ₀ "
+     "and c_m,c/4 = (π/4)(A₂ − A₁). For the NACA 2412: α_L0 = −2.08°, c_m,c/4 = −0.053.",
+     "Compute the theory again by quadrature, then solve the camber line at 4° with 40 to 320 panels: α_L0 and c_m against "
+     "the theory, and the order of convergence.",
+     thinNacaScene, thinNaca},
+    {k_thin, "Circular arc: the exact solution",
+     "The Joukowski map turns the flow past a circle into the exact flow past a circular arc of camber h/c = ½ tan β: with the "
+     "Kutta condition c_l = 2π sin(α + β)/cos β and α_L0 = −β.",
+     "Solve an arc of 5% camber at 3° with 40 to 320 panels: c_l, α_L0 and the velocity at every node at least 0.1c from it, "
+     "against the conformal map.",
+     thinArcScene, thinArc},
+    {k_thin, "Kutta–Joukowski lift and circulation",
+     "Around the airfoil ∮ V·dl = −Γ (counter-clockwise), and the force from the far field (Blasius) is L′ = ρV∞Γ with no "
+     "drag. Thin-airfoil theory's c_l = ∫ΔCp d(x/c) with ΔCp = 2γ/V∞ is the same lift to first order.",
+     "Integrate V·dl and W² dz on two circles around a NACA 2412 camber line (inside and beyond the far-field series), and "
+     "integrate ΔCp along the chord of a plate and of the NACA 2412.",
+     thinNacaScene, thinKuttaJoukowski},
+    {k_thin, "Vortex panel sums, near and far",
+     "The velocity of a vortex sheet is the Biot–Savart integral W = (i/2π) ∫ γ(s) ds / (z − z(s)) along it.",
+     "Integrate it numerically (64-point Gauss–Legendre on every panel) at every node of the view away from a NACA 2412 "
+     "camber line, and compare with the program's closed form and far-field series.",
+     thinNacaScene, thinSums},
+    {k_thin, "No flow through the camber line",
+     "γ is chosen so that no fluid crosses the camber line at any control point, together with the source panels of any "
+     "body, in the flow of every other element. Across the sheet the normal velocity is continuous and the tangential one "
+     "jumps by γ.",
+     "An airfoil beside a source-panel circle, with a vortex and a wall: check v·n at every control point of both, the jump "
+     "across the sheet, and that the airfoil's circulation changes with the others there.",
+     thinWithBodyScene, thinBoundary},
 };
 
 } // namespace

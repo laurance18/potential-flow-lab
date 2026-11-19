@@ -5,6 +5,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <numbers>
 
 namespace pfl {
 namespace {
@@ -70,7 +71,7 @@ std::string linesCsv(const StreamlineSet& streamlines, const StreamlineSet& equi
 
 std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& model) {
     const double nan = std::nan("");
-    std::string out = "body,closed,x,y,s,streamwise,theta_deg,cp,cp_exact\n";
+    std::string out = "body,closed,x,y,s,streamwise,theta_deg,cp,cp_exact,lambda,lambda_exact\n";
     for (std::size_t b = 0; b < bodies.size(); ++b) {
         const BodySurface& body = bodies[b];
         const std::optional<CylinderReference> cylinder = cylinderReference(body, model);
@@ -78,9 +79,12 @@ std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& 
             const Vec2 p = body.points[k];
             double exact = nan;
             if (cylinder) exact = cylinder->cp(std::atan2(p.y - cylinder->centre.y, p.x - cylinder->centre.x));
+            else if (!body.cpExact.empty()) exact = body.cpExact[k];
             std::format_to(std::back_inserter(out), "{},{},", b + 1, body.closed ? 1 : 0);
+            const double lambda = k < body.strength.size() ? body.strength[k] : nan;
+            const double lambdaExact = k < body.strengthExact.size() ? body.strengthExact[k] : nan;
             for (const double value : {p.x, p.y, body.arcLength[k], body.streamwise[k],
-                                       body.closed ? body.angle[k] : nan, body.cp[k], exact}) {
+                                       body.closed ? body.angle[k] : nan, body.cp[k], exact, lambda, lambdaExact}) {
                 appendNumber(out, value);
                 out += ',';
             }
@@ -92,7 +96,9 @@ std::string surfaceCsv(const std::vector<BodySurface>& bodies, const FlowModel& 
 
 std::string sweepCsv(const std::vector<SweepSample>& samples) {
     const double nan = std::nan("");
-    std::string out = "step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact\n";
+    std::string out = "step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact,"
+                      "alpha_deg,cm_c4,cl_thin,cm_c4_thin\n";
+    constexpr double degrees = 180.0 / std::numbers::pi;
     const auto row = [&out](std::size_t step, double value, const char* kind, std::size_t index,
                             std::initializer_list<double> values) {
         std::format_to(std::back_inserter(out), "{},", step);
@@ -108,13 +114,19 @@ std::string sweepCsv(const std::vector<SweepSample>& samples) {
         const SweepSample& sample = samples[s];
         for (std::size_t i = 0; i < sample.stagnationPoints.size(); ++i) {
             const Vec2 p = sample.stagnationPoints[i];
-            row(s + 1, sample.value, "stagnation", i + 1, {p.x, p.y, nan, nan, nan, nan, nan, nan, nan, nan, nan});
+            row(s + 1, sample.value, "stagnation", i + 1, {p.x, p.y, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan, nan});
         }
         for (std::size_t i = 0; i < sample.bodies.size(); ++i) {
             const SweepBody& b = sample.bodies[i];
             row(s + 1, sample.value, "body", i + 1,
                 {b.centroid.x, b.centroid.y, b.closed ? 1.0 : 0.0, b.chord, b.circulation, b.lift, b.drag,
-                 b.lift / b.chord, b.drag / b.chord, b.cpMin, b.exactLift});
+                 b.lift / b.chord, b.drag / b.chord, b.cpMin, b.exactLift, nan, nan, nan, nan});
+        }
+        for (std::size_t i = 0; i < sample.airfoils.size(); ++i) {
+            const SweepAirfoil& a = sample.airfoils[i];
+            row(s + 1, sample.value, "airfoil", i + 1,
+                {a.position.x, a.position.y, nan, a.chord, a.circulation, a.lift, nan, a.lift / a.chord, nan, a.cpMin,
+                 a.exactLift, a.alpha * degrees, a.cmQuarter, a.clTheory, a.cmTheory});
         }
     }
     return out;

@@ -34,7 +34,9 @@ void drawStatusBar(ImVec2 pos, ImVec2 size, const StatusInfo& info) {
     if (info.probe) {
         const ProbeInfo& p = *info.probe;
         std::string text = std::format("x = {:.4f}   y = {:.4f}", p.position.x, p.position.y);
-        if (!p.inDomain) {
+        if (p.insideBody) {
+            text += std::format("   (inside source-panel body #{})", *p.insideBody);
+        } else if (!p.inDomain) {
             text += "   (outside the flow domain)";
         } else {
             // + 0.0 turns -0 into 0 (e.g. v = -Im W of an empty field).
@@ -59,6 +61,27 @@ void drawStatusBar(ImVec2 pos, ImVec2 size, const StatusInfo& info) {
             for (const WallStatus& w : info.walls) {
                 ImGui::Text("Wall #%zu: max |v·n| / max |V| = %.2e (%d points)", w.number, w.relativeNormalSpeed,
                             w.samples);
+            }
+            ImGui::EndTooltip();
+        }
+    }
+
+    if (!info.panelBodies.empty()) {
+        separator();
+        const auto worst = std::ranges::max_element(info.panelBodies, {}, &PanelStatus::relativeNormalSpeed);
+        ImGui::Text("Panels: max |v·n| / |V| = %.1e", worst->relativeNormalSpeed);
+        if (ImGui::BeginItemTooltip()) {
+            ImGui::TextUnformatted("Flow through each source-panel body and vortex-sheet airfoil at its control points; the "
+                                   "net source\nstrength Σλs of a body (0 for the exact solution of a closed body; it "
+                                   "shrinks as N grows), the circulation of an airfoil:");
+            for (const PanelStatus& b : info.panelBodies) {
+                if (b.airfoil) {
+                    ImGui::Text("Airfoil #%zu (N = %d): max |v·n| / max |V| = %.2e,  Γ = %.5g,  γ(TE) = 0 (Kutta)", b.number,
+                                b.panels, b.relativeNormalSpeed, b.circulation);
+                } else {
+                    ImGui::Text("Body #%zu (N = %d): max |v·n| / max |V| = %.2e,  Σλs / (V∞ · perimeter) = %.2e", b.number,
+                                b.panels, b.relativeNormalSpeed, b.relativeNetSource);
+                }
             }
             ImGui::EndTooltip();
         }

@@ -14,6 +14,9 @@
 // was chosen, moved by dragging their line, turned or stretched by dragging an end, and edited or
 // deleted from a right-click menu. While anything is grabbed, dragging no longer pans the plot.
 // Clicking a stagnation point shows or hides its dividing streamlines, which are drawn above the dye.
+// After the toolbar's outline tool, clicks on the plot place the points of a new body's outline (a
+// drag sketches it freehand); clicking the first point again, Enter or a double-click closes it,
+// Backspace takes back the last point and Esc gives up.
 #pragma once
 
 #include "core/flow_field.hpp"
@@ -93,6 +96,7 @@ struct PlotViewResult {
     std::optional<ElementMove> move;      // an element dragged to a new position this frame
     std::optional<RakeChange> rakeChange; // a rake placed, dragged or edited this frame
     std::optional<std::size_t> rakeRemove;
+    std::optional<std::vector<Vec2>> drawnOutline; // an outline just closed, for a new panel body
     std::optional<Vec2> dividingAdd;           // a stagnation point clicked to show its dividing streamlines
     std::optional<std::size_t> dividingRemove; // index in PlotLayers::dividingPoints, clicked to hide them
     bool dragging = false;                // an element or a rake is being dragged
@@ -106,6 +110,10 @@ public:
     // Starts (or, if already started, cancels) placing a dye rake: the next drag on the plot draws it.
     void toggleRakePlacement();
     bool placingRake() const { return m_placingRake; }
+
+    // Starts (or cancels) drawing the outline of a new source-panel body.
+    void toggleBodyDrawing();
+    bool drawingBody() const { return m_drawingBody; }
 
     PlotViewResult draw(ImVec2 pos, ImVec2 size, const Scene& scene, const FlowModel& model, const PlotLayers& layers);
 
@@ -122,12 +130,15 @@ private:
 
     void updateGrab(const Scene& scene, Vec2 mouseWorld, const Rect& limits, float heightPx, PlotViewResult& result);
     void updateRakePlacement(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result);
+    void updateBodyDrawing(Vec2 mouseWorld, bool hovered, const Rect& limits, float heightPx, PlotViewResult& result);
 
     std::optional<Rect> m_pendingView;
     std::optional<Grab> m_grab;
     bool m_grabbableHovered = false; // last frame: something draggable under the mouse (blocks panning)
     bool m_placingRake = false;
     std::optional<Vec2> m_rakeStart;       // while a new rake is being drawn
+    bool m_drawingBody = false;
+    std::vector<Vec2> m_outline;           // the points of the outline being drawn
     std::optional<std::size_t> m_rakeMenu; // rake whose right-click menu is open
 };
 

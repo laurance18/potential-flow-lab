@@ -15,7 +15,7 @@ The window has four parts:
 
 | Part | What it does |
 |---|---|
-| Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below them, the dye rake tool. |
+| Toolbar (left) | One icon per element type. Hover for its name, click to add one. Below the source-panel body, the pencil that draws one, then the vortex-sheet airfoil. At the bottom, the dye rake tool. |
 | Plot (centre) | The flow in the (x, y) plane: streamlines, arrows, element markers. |
 | Menu bar (top) | **File** (including exports), **Edit** (undo / redo), **Examples**, **Elements**, **View**, **Verify** and **Help** menus. |
 | Status bar (bottom) | Velocity under the mouse, streamline count, wall check, warnings. |
@@ -60,6 +60,8 @@ yellow warning appears before you apply.
 | Doublet | strength μ, position, axis angle β | F = μ e^(iβ)/(z − z₀); β = α with a uniform flow at α gives a cylinder of radius √(μ/U∞) |
 | Sector (wedge) flow | strength V, vertex, wall angles θ₁, θ₂ | 0 < θ₂ − θ₁ ≤ 360°, n = 180°/(θ₂ − θ₁) |
 | Symmetry wall | a point on the wall, angle φ | infinite straight wall with zero normal velocity |
+| Source-panel body | shape, semi-axes a and b, centre, rotation θ, panels N | a solid ellipse or rectangle, solved by the source panel method (see *Source-panel bodies*) |
+| Vortex-sheet airfoil | camber line, chord c, middle of the chord, rotation θ (α = −θ), panels N | a thin airfoil: a vortex sheet γ > 0 clockwise on the camber line, with the Kutta condition (see *Vortex-sheet airfoils*) |
 
 To change or remove an element later, open the **Elements** menu: every element is listed with
 its parameters; hover one and choose **Edit...** or **Delete**. **Delete all** (or **File → Clear
@@ -99,6 +101,17 @@ The **View** menu holds the plot settings, which are saved with the scene:
 - **Tracer particles** and **Particle trails**: animated particles coloured by speed (blue slow,
   red fast). They are a visual aid only; the streamlines are the result.
 
+**Speed.** The work runs on every core of the processor:
+- the tracer particles and the dye;
+- the |V| and Cp contours, and the search for stagnation points;
+- while you drag, slide or sweep, the streamlines through the previous frame's seeds.
+
+Each result is exactly what one core would compute, only sooner. Near source-panel bodies and
+thin airfoils, each group of 16 panels sums its velocity as a series of its own wherever a point is
+far enough from it. That gives the same values to rounding as summing the panels one by one, about
+twice as fast near a 100-panel body. Animations stay smooth with several panel bodies, and a drag
+redraws the streamlines several times a second even around an airfoil next to a body.
+
 ## Dye rakes
 
 A dye rake is a line of dye emitters, as in a water or smoke tunnel. Click the rake tool at the
@@ -123,7 +136,8 @@ of animation and disappears where it leaves the view or runs into a singular poi
 
 **View → Surface pressure** finds the bodies in the flow: the closed bodies (cylinder, lifting
 cylinder, Rankine oval) and half-bodies bounded by the dividing streamlines through stagnation
-points. It needs a uniform flow.
+points, and the source-panel bodies (see *Source-panel bodies*), which come first. It needs a
+uniform flow.
 
 - In the plot, each body surface is coloured by Cp on the same scale as the Cp background. Arrows
   normal to the surface point towards it where Cp > 0 (pressure) and away from it where Cp < 0
@@ -170,17 +184,21 @@ right-click its slider and pick *Sweep this parameter*; its label turns blue.
   | Column | Meaning |
   |---|---|
   | `step`, `value` | step number (from 1) and the parameter value (angles in radians) |
-  | `kind`, `index` | `stagnation` (one row per stagnation point) or `body` (one row per body found) |
-  | `x`, `y` | the stagnation point, or the body's centroid (a half-body: its stagnation point) |
+  | `kind`, `index` | `stagnation` (one row per stagnation point), `body` (one row per body found) or `airfoil` (one row per vortex-sheet airfoil) |
+  | `x`, `y` | the stagnation point, the body's centroid (a half-body: its stagnation point), or the middle of the airfoil's chord |
   | `closed` | 1 for a closed body, 0 for a half-body |
-  | `chord`, `circulation` | of a closed body |
-  | `lift_q`, `drag_q`, `cl`, `cd` | L′/q∞, D′/q∞ and the coefficients from the surface Cp |
-  | `cp_min` | the lowest Cp on the surface |
-  | `lift_q_exact` | 2Γ/V∞ (Kutta–Joukowski) for an isolated closed body |
+  | `chord`, `circulation` | of a closed body or an airfoil |
+  | `lift_q`, `drag_q`, `cl`, `cd` | L′/q∞, D′/q∞ and the coefficients from the surface Cp (an airfoil: from ΔCp along the chord, no drag) |
+  | `cp_min` | the lowest Cp on the surface (an airfoil: on either side) |
+  | `lift_q_exact` | 2Γ/V∞ (Kutta–Joukowski) for an isolated closed body, and for every airfoil |
+  | `alpha_deg`, `cm_c4` | an airfoil's angle of attack in degrees and its c_m about the quarter chord |
+  | `cl_thin`, `cm_c4_thin` | thin-airfoil theory's c_l and c_m,c/4 at that angle |
 
   Columns that do not apply are `NaN`. Steps where the value makes the element invalid are left
   out. To plot lift against Γ in Python:
   `d = pandas.read_csv("flow_sweep.csv"); b = d[d.kind == "body"]; plot(b.value, b.lift_q)`.
+  For an airfoil's c_l–α line, sweep its **α** and plot
+  `a = d[d.kind == "airfoil"]; plot(a.alpha_deg, a.lift_q_exact / a.chord, a.alpha_deg, a.cl_thin)`.
 
 ## Recording animations
 
@@ -228,6 +246,212 @@ one placed outside has an image inside, which acts as a real element there, and 
 about it. Other wall layouts with no closed image system, such as three parallel walls or walls not
 meeting at 180°/k, are truncated at 32 images per element, and the status bar warns that the wall
 condition is then approximate.
+
+## Source-panel bodies
+
+Superposition only makes the bodies that its elements happen to produce: a cylinder, a Rankine
+oval, a half-body. The **source panel method** (Anderson, §3.17) works the other way round: you
+give the shape, and the program finds the flow around it. Add one with the **Source-panel body**
+tool at the bottom of the element icons (below a separator: it is solved numerically, not
+written down in closed form).
+
+| Parameter | Meaning |
+|---|---|
+| Shape | **Ellipse** (a circle when a = b), **Rectangle**, **NACA 4-digit airfoil** or an **outline** you drew or imported (see below) |
+| a, b | Half the size along and across the body's own x axis: the semi-axes of the ellipse, the half-width and half-height of the rectangle or the outline, half the chord and half the thickness of the airfoil |
+| x₀, y₀ | Centre of the body (drag it there, or grab it anywhere inside it) |
+| θ | Turns the body counter-clockwise about its centre |
+| N | Number of panels, 4 to 400 (a rectangle or an airfoil needs an even number) |
+
+How it works:
+
+- The surface is cut into N straight panels, numbered clockwise. Each one is a source sheet of
+  its own constant strength λ (volume flow per unit length).
+- The strengths are not given: they are solved for, so that at the middle of every panel (its
+  **control point**) no fluid crosses the surface. The flow there is the free stream, every other
+  element of the scene (and its wall images) and all the panels, of every panel body at once, so
+  bodies feel each other.
+- The surface speed is the tangential velocity at the control points, and Cp follows from
+  Bernoulli. The surface-pressure panel plots it at the control points (one marker per panel);
+  for an ellipse or circle alone in a uniform stream it also draws the exact curve, from the
+  conformal map of the cylinder flow, and prints the largest difference.
+- Inside the body the panels make a flow of their own that means nothing physically, so the
+  inside is drawn as a solid and left out of the flow: streamlines stop at the surface and
+  particles never go in. The status bar says so when the mouse is inside.
+
+What to expect:
+
+- **A circle is exact at the control points**, for any N: Anderson's 8-panel cylinder already
+  gives Cp = 1 − 4 sin²θ there. Between the control points and away from the body it is not.
+- **An ellipse converges**: the surface Cp error falls about 4 times each time N doubles (second
+  order), the velocity away from the body only about 2 times (first order). Sweep N in the
+  **Parameters** panel to watch it.
+- **No lift, no drag.** Source panels carry no circulation, so a body alone in a stream feels no
+  force (d'Alembert), at any angle. Put a **vortex inside** the body to give it circulation: inside
+  a circle that is the lifting cylinder, and the lift from the panels approaches L′ = ρV∞Γ. Only
+  the circulation of what lies inside a body shows outside it; the panels cancel a source or
+  doublet inside it, and a warning says so. Nothing in this method fixes how much circulation an
+  airfoil gets: that is the Kutta condition, which needs vortex panels.
+- Sharp corners (the rectangle) have infinite speed in exact potential flow. The panels are made
+  shorter near the corners, but Cp right at a corner stays only an estimate.
+
+**Seeing the source strengths.** **View → Panel strengths (λ, γ)** draws the solution itself on
+every panel body: a stick from each control point, normal to its panel, as long as the panel's
+strength λ (the longest stick is the largest |λ| of all the panels; a caption gives its value).
+It points outwards, in green, for a source (λ > 0, fluid pushed out of the surface) and inwards,
+in red, for a sink. The line through the tips is the strength distribution as a polar plot around
+the body. Hover a stick for the panel's number, λ, λ/V∞, λ/2πV∞, its Cp and the volume flow λs
+it lets out. With **Surface pressure** on, the side panel also plots λ/V∞ along the surface, on the
+same axis as Cp, over the exact continuous sheet where it is known (an ellipse or circle alone in a
+uniform stream). The exact sheet leaves a uniform flow inside the body, so λ = −v_inside · n; on a
+circle λ = −2V∞ cos(θ − α), 2V∞ on the point facing the stream.
+
+The strengths converge more slowly than Cp, at first order: Anderson's 8 panels give 2.366 V∞ on
+the panel facing the stream, 18 % above the sheet's 2V∞, while their Cp at the control points is
+already exact. Sweep N and watch the sticks settle onto the sheet. On the rectangle the short
+corner panels carry the largest strengths, where the flow has to turn round the corner.
+
+The status bar shows the boundary condition as it is solved: the largest |v · n| at the control
+points over the speed there (about 10⁻¹⁵), and in its tooltip Σλs, the net source strength of each
+body, which is zero for the exact solution of a closed body (and zero by symmetry for an ellipse or
+rectangle alone in a stream).
+
+### Shapes of your own: drawing, airfoils and imported coordinates
+
+Besides the ellipse and the rectangle, a source-panel body can be:
+
+- **A NACA 4-digit airfoil.** Choose *NACA 4-digit airfoil* as the shape and give the camber m
+  (% of the chord), its position p (tenths of the chord), the chord c and the thickness t/c; the
+  dialog shows the designation (NACA 2412, ...). The airfoil lies along the body's x axis, leading
+  edge in front; with a stream along +x its angle of attack is α = −θ. The N panels (an even number)
+  are cosine-spaced along the chord, short at both edges.
+- **A drawn outline.** Pick the **pencil tool** (just below the source-panel body icon) and click
+  points around the shape you want, or hold the button and drag to sketch it. Click the first
+  point again (or press Enter, or double-click) to close it; Backspace takes back the last point
+  and Esc gives up. The dialog then opens with the new body where you drew it.
+- **Imported airfoil coordinates.** **File → Import airfoil coordinates (.dat)...** reads an x y
+  coordinate file in the Selig or Lednicer layout, the two used by the UIUC airfoil database. The
+  airfoil gets a chord of 2 and its own thickness, 120 panels, and the name from the file.
+
+For a drawn or imported outline the points only give the shape; the N panels are laid along it
+independently of them:
+
+- **Smooth outline** (the default): a smooth curve (a cubic spline) through the points, except at
+  sharp corners, turning by more than 100° (a trailing edge), which stay sharp. A dozen points
+  already give a smooth blob; points on an ellipse are joined into the ellipse to within 3·10⁻⁴
+  with 24 points and 2·10⁻⁵ with 48.
+- **Straight outline** (untick *Smooth outline*): straight lines from point to point, with a corner,
+  and so a panel vertex, at every point where the outline turns. That needs at least as many panels
+  as corners.
+- Every corner is a panel vertex. Between corners the panels are shared out by length, a little
+  shorter where the outline curves, and cosine-spaced towards corners sharper than 30°.
+- a and b are the half-width and half-height of the outline: it is stretched to fit 2a × 2b.
+  *Keep the outline's proportions* sets b back so that it is not distorted.
+- An outline must not cross itself (the dialog says so if it does). Concave shapes are fine: a body
+  that no point inside it sees whole (a crescent, a C) sums the panels of its complex potential one
+  by one instead of by vertex, with the same result. Its φ and ψ exports then jump across lines
+  running in −x from the vertices; the velocity does not.
+
+What to expect from these shapes: Cp converges at first order on them (the error halves when N
+doubles), as constant-strength panels do on a general spacing. The ellipse preset's equal steps
+are a special case, with second order. An airfoil at incidence shows the limit of source panels
+most clearly. Without circulation it has no lift, and the flow has to turn round the sharp trailing
+edge, where its exact speed is infinite: the panels there need huge strengths (the sticks of
+**Panel strengths** are cut short), and the force from Cp comes to d'Alembert's zero only
+slowly. Putting the Kutta condition on that trailing edge is what a vortex sheet does (see *Vortex-sheet airfoils*).
+
+Limits: panel bodies have no images in symmetry walls (the walls are then not streamlines near the
+body, and a warning says so), and overlapping bodies have no meaningful solution (also warned).
+Stagnation points on a panel body are found where the tangential speed changes sign between two
+control points.
+
+## Vortex-sheet airfoils (thin-airfoil theory)
+
+A source-panel airfoil gets no lift: nothing in it sets the circulation. Classical **thin-airfoil
+theory** (Anderson, §4.7 to 4.8) sets it with the Kutta condition. It replaces the airfoil by its
+**camber line** and puts a vortex sheet γ(s) on it, with γ = 0 at the trailing edge so the flow
+leaves it smoothly. The **Vortex-sheet airfoil** tool (the last of the panel-method icons, a curved
+line with sticks on it) does exactly that, numerically.
+
+| Parameter | Meaning |
+|---|---|
+| Camber line | **Flat plate**, **NACA 4-digit mean line** (camber m % of the chord at p tenths of the chord, as for the NACA body) or **circular arc** (camber h/c, its height at mid-chord, up to 25 %) |
+| Chord c | from the leading to the trailing edge |
+| x₀, y₀ | the **middle of the chord** (drag it there, or grab the airfoil anywhere along its line) |
+| θ | turns the airfoil counter-clockwise about the middle of its chord; in a stream along +x the angle of attack is **α = −θ**, as for the NACA source-panel body |
+| N | number of vortex panels along the camber line, 4 to 400 |
+
+The camber line has no thickness: the flow goes past both sides of it. In the Parameters panel the
+airfoil has a slider for **α** as well as θ (the same rotation, read the other way), so a sweep of α
+gives its c_l–α line (see *Live parameters and sweeps*).
+
+How it works:
+
+- The camber line is cut into N straight panels, cosine-spaced along the chord
+  (x = (c/2)(1 − cos θ₀) at equal steps of θ₀), so they are short at both edges.
+- γ varies linearly along each panel between its values at the vertices, so the sheet strength is
+  continuous. The trailing-edge value is γ = 0: the **Kutta condition**. The other N values are
+  solved so that no fluid crosses the camber line at the middle of each panel.
+- The airfoils are solved **in one system with the source-panel bodies**, against everything else
+  in the scene (wall images included), so airfoils and bodies feel each other.
+- Why these panels: constant-strength vortex panels collocated at their midpoints have no Kutta
+  condition (on a flat plate they converge to the flow without circulation). Point vortices, as in
+  the lumped-vortex 1/4–3/4 rule, make the streamlines and particles near the line jump. Linear
+  panels keep the velocity finite everywhere along the line except at the leading edge, where the
+  exact γ is infinite.
+- The panels apply the boundary condition on the curved line itself, not on its chord, and at the
+  real angle. So they converge to the exact potential flow past the infinitely thin line: for a
+  flat plate c_l = 2π sin α, for a circular arc the conformal-map result. Thin-airfoil theory is
+  the linearization of that (2πα for the plate). The difference is of order α² and (dz/dx)²: about
+  0.1 % for a NACA 2412 at 4°.
+
+What you see:
+
+- **The plot**: the camber line as a thin solid line. The flow passes smoothly off the trailing
+  edge, and the front stagnation point sits just under the leading edge at positive α. The
+  stagnation points on the sheet are where the speed along one side changes sign between two
+  control points. Streamlines stop rather than cut through the line.
+- **View → Panel strengths (λ, γ)** draws γ at every vertex as a stick normal to the camber line:
+  above it (amber) for γ > 0, which is clockwise and makes the flow over the top faster, and below
+  it (cyan) for γ < 0. The line through the tips is the loading. The leading-edge stick is cut
+  short (the exact γ is infinite there), and the trailing-edge one is zero. Hover a stick for γ,
+  ΔCp = 2γ/V∞ and thin-airfoil theory's value there.
+- **View → Surface pressure** opens a section for each airfoil in the side panel:
+  - ΔCp(x/c) = 2γ/V∞ along the chord, the panels' values at their vertices over the
+    thin-airfoil curve 4[A₀(1 + cos θ)/sin θ + Σ Aₙ sin nθ]. Hover a point to mark it on the
+    airfoil.
+  - The theory's Fourier coefficients A₀ to A₃: A₀ = α − (1/π)∫ dz/dx dθ₀ and
+    Aₙ = (2/π)∫ dz/dx cos nθ₀ dθ₀. They are exact for the flat plate and the NACA mean line, and
+    summed to full precision for the arc.
+  - The panels beside the theory:
+    - Γ;
+    - c_l from Kutta–Joukowski, 2Γ/(V∞c), and from ∫ΔCp d(x/c) along the chord, both against
+      2π(A₀ + A₁/2);
+    - c_m about the quarter chord against (π/4)(A₂ − A₁);
+    - α_L0 against −(1/π)∫ dz/dx (cos θ₀ − 1) dθ₀;
+    - the lift slope against 2π;
+    - γ at the trailing edge.
+  - The two lift values agree exactly on a flat plate. With camber the ΔCp one is slightly lower,
+    because γ is per unit length of the curved line while ΔCp is integrated along the chord
+    (dx = ds cos ε). The theory does not tell them apart.
+  - The panels' α_L0 and lift slope come from solving for unit streams along x and y as well. They
+    are shown only when the rest of the flow is uniform (other panel bodies and airfoils are
+    allowed).
+- **Status bar**: the boundary condition at the airfoil's control points (about 10⁻¹⁵), and in its
+  tooltip Γ.
+
+Signs: γ and Γ are positive clockwise, like a vortex's Γ, so Γ > 0 lifts in a stream along +x
+(L′ = ρV∞Γ). ΔCp = Cp_lower − Cp_upper, c_m > 0 nose up. φ is multivalued around an airfoil
+with circulation. The field export puts its jump of Γ on the ray running on from the trailing edge
+along the chord. Across the sheet itself φ jumps as well, as it does across any vortex sheet.
+
+Warnings: no uniform flow (so no stream past the trailing edge), an angle of attack beyond 15° (a
+real airfoil would have stalled), an airfoil running into a source-panel body or crossing another
+airfoil, an element lying on the camber line, and walls. Like panel bodies, airfoils have no
+images in walls.
+
+Not included: the airfoils' surfaces are not in the surface-Cp CSV export, and thick airfoils
+with vortex panels on their surface are not modelled.
 
 ## Saving and loading configurations
 
@@ -283,9 +507,9 @@ PotentialFlowLab.exe examples\lifting_cylinder.json --export-video lifting_cylin
 ## Verifying the physics
 
 **Verify → Physics checks...** (F5) tests the program against potential-flow theory, in front of
-you. Each of the 44 checks runs the program's own code and compares the result with the exact one,
+you. Each of the 61 checks runs the program's own code and compares the result with the exact one,
 written out separately, mostly in polar form, without using the program's equations. The checks are
-in eight groups:
+in ten groups:
 
 | Group | What is checked |
 |---|---|
@@ -296,6 +520,8 @@ in eight groups:
 | Pressure and forces | Cp on the cylinder and the Rankine bodies, d'Alembert's paradox, Kutta–Joukowski lift, forces from the far field (Blasius), and forces along a parameter sweep |
 | Streamlines and equipotentials | Straight lines in a uniform flow, rays from a source or sink, circles around a vortex in the right direction, ψ constant along streamlines, even spacing, arrows along the flow, and equipotentials at 90° to the streamlines |
 | Particles and dye | Tracer particles against the exact orbit around a vortex and against ψ past a cylinder; dye against ψ and the spacing V∞Δt |
+| Panel methods | Source panels on a cylinder (exact at the control points, and Anderson's 8-panel strengths), on an ellipse (second-order convergence of Cp), the panel strengths against the exact source sheet (first order), the panel sums near and far, the field around an ellipse against its conformal map, a lifting cylinder from a vortex inside panels, no flow through the panels, drawn outlines (the spline through points on an ellipse, and its flow), NACA 4-digit geometry and Σλs, and a concave body against the panels summed directly |
+| Thin airfoils | A flat plate's c_l → 2π sin α (second order) and its γ(x) = 2V∞ sin α √((c − x)/x) with γ(TE) = 0; the NACA 2412 mean line's α_L0 and c_m,c/4 against thin-airfoil theory (itself checked by quadrature); a circular arc against the exact Joukowski solution, c_l and the whole field; ∮V·dl = Γ and the Blasius lift ρV∞Γ with no drag; the panel sums against the Biot–Savart integral; and no flow through the camber line beside a source-panel body |
 | Saving and reopening | A scene with every kind of element saved to a file and reopened: every parameter, the rakes, the plot settings and the streamlines come back |
 
 The checks run one after another, and each turns into a green tick when it passes (red cross if

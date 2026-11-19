@@ -108,7 +108,66 @@ void drawToolIcon(ImDrawList* dl, ImVec2 c, float size, ElementKind kind) {
         drawArrowHead(dl, c + ImVec2(0.85f * h, -0.45f * h), ImVec2(1.0f, 0.0f), 0.25f * h, k_uniformColor);
         break;
     }
+    case ElementKind::PanelBody: {
+        // An ellipse cut into straight panels, each with a small source arrow out of its midpoint.
+        constexpr int panels = 10;
+        std::array<ImVec2, panels> v;
+        for (int k = 0; k < panels; ++k) v[static_cast<std::size_t>(k)] = c + ImVec2(0.62f * h * std::cos(k * 2.0f * k_pi / panels), 0.4f * h * std::sin(k * 2.0f * k_pi / panels));
+        dl->AddConvexPolyFilled(v.data(), panels, k_panelFillColor);
+        dl->AddPolyline(v.data(), panels, k_panelColor, ImDrawFlags_Closed, 1.6f * s);
+        for (int k = 0; k < panels; k += 2) {
+            const ImVec2 a = v[static_cast<std::size_t>(k)];
+            const ImVec2 b = v[static_cast<std::size_t>((k + 1) % panels)];
+            const ImVec2 m = (a + b) * 0.5f;
+            ImVec2 n(b.y - a.y, a.x - b.x); // outward: the points run clockwise on screen (y down)
+            n = n / std::sqrt(n.x * n.x + n.y * n.y);
+            dl->AddLine(m, m + n * (0.22f * h), k_sourceColor, 1.3f * s);
+            drawArrowHead(dl, m + n * (0.38f * h), n, 0.18f * h, k_sourceColor);
+        }
+        break;
     }
+    case ElementKind::ThinAirfoil: {
+        // A cambered line with its vortex strength: tall sticks at the leading edge, none at the
+        // trailing edge (Kutta), and the line through their tips.
+        constexpr int points = 9;
+        std::array<ImVec2, points> line;
+        std::array<ImVec2, points> tips;
+        for (int k = 0; k < points; ++k) {
+            const float x = 0.5f * (1.0f - std::cos(k_pi * k / (points - 1))); // cosine spacing, 0 .. 1
+            const ImVec2 p = c + ImVec2((x - 0.5f) * 1.6f * h, (0.35f - 0.9f * x * (1.0f - x)) * h);
+            line[static_cast<std::size_t>(k)] = p;
+            const float strength = k == 0 ? 0.95f : std::min(0.95f, 0.32f * std::sqrt((1.0f - x) / x));
+            tips[static_cast<std::size_t>(k)] = p - ImVec2(0.0f, strength * h);
+        }
+        for (int k = 0; k < points; ++k) {
+            dl->AddLine(line[static_cast<std::size_t>(k)], tips[static_cast<std::size_t>(k)], fadeColor(k_vortexColor, 0.85f), 1.3f * s);
+        }
+        dl->AddPolyline(tips.data(), points, IM_COL32(235, 235, 235, 170), ImDrawFlags_None, 1.0f * s);
+        dl->AddPolyline(line.data(), points, k_sheetColor, ImDrawFlags_None, 2.2f * s);
+        break;
+    }
+    }
+}
+
+void drawOutlineToolIcon(ImDrawList* dl, ImVec2 c, float size) {
+    const float s = uiScale();
+    const float h = 0.5f * size;
+    // A lopsided blob, open where the pencil is still drawing it.
+    constexpr int samples = 28;
+    for (int k = 0; k <= samples - 4; ++k) {
+        const float t = 2.0f * k_pi * k / samples + 0.9f;
+        const float r = 0.55f * h * (1.0f + 0.22f * std::sin(2.0f * t) + 0.12f * std::cos(3.0f * t));
+        dl->PathLineTo(c + ImVec2(-0.12f * h, 0.05f * h) + polar(r, t));
+    }
+    dl->PathStroke(k_panelColor, ImDrawFlags_None, 1.8f * s);
+    const ImVec2 tip = c + ImVec2(-0.12f * h, 0.05f * h) + polar(0.55f * h * (1.0f + 0.22f * std::sin(1.8f) + 0.12f * std::cos(2.7f)), 0.9f);
+    const ImVec2 dir = polar(1.0f, -0.85f);   // up and to the right, along the pencil
+    const ImVec2 side{-dir.y, dir.x};
+    const ImVec2 back = tip + dir * (0.85f * h);
+    const ImU32 wood = IM_COL32(245, 185, 65, 255);
+    dl->AddTriangleFilled(tip, tip + dir * (0.25f * h) + side * (0.1f * h), tip + dir * (0.25f * h) - side * (0.1f * h), IM_COL32(235, 235, 235, 255));
+    dl->AddQuadFilled(tip + dir * (0.25f * h) + side * (0.1f * h), back + side * (0.1f * h), back - side * (0.1f * h),
+                      tip + dir * (0.25f * h) - side * (0.1f * h), wood);
 }
 
 void drawDyeRakeIcon(ImDrawList* dl, ImVec2 c, float size) {

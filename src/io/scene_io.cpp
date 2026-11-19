@@ -18,6 +18,8 @@ using nlohmann::json;
 constexpr const char* k_format = "pfl-scene";
 constexpr int k_version = 1;
 constexpr double k_degrees = 180.0 / std::numbers::pi;
+constexpr std::array k_panelShapes = {PanelShape::Ellipse, PanelShape::Rectangle, PanelShape::Naca, PanelShape::Custom};
+constexpr std::array k_camberLines = {CamberLine::Flat, CamberLine::Naca, CamberLine::Arc};
 
 template <typename... Ts>
 struct Overloaded : Ts... {
@@ -51,6 +53,39 @@ json elementToJson(const SceneElement& element) {
             [](const SymmetryWall& e) -> json {
                 return {{"type", "wall"}, {"x", e.point.x}, {"y", e.point.y}, {"angle_deg", e.angle * k_degrees}};
             },
+            [](const PanelBody& e) -> json {
+                json j = {{"type", "source_panels"},
+                          {"shape", shapeName(e.shape)},
+                          {"x", e.position.x},
+                          {"y", e.position.y},
+                          {"a", e.semiAxisA},
+                          {"b", e.semiAxisB},
+                          {"angle_deg", e.angle * k_degrees},
+                          {"panels", e.panels}};
+                if (e.shape == PanelShape::Naca) {
+                    j["naca_camber"] = e.nacaCamber;
+                    j["naca_position"] = e.nacaPosition;
+                }
+                if (e.shape == PanelShape::Custom) {
+                    json points = json::array();
+                    for (const Vec2 p : e.outline) points.push_back({p.x, p.y});
+                    j["name"] = e.name;
+                    j["smooth"] = e.smooth;
+                    j["outline"] = points;
+                }
+                return j;
+            },
+            [](const ThinAirfoil& e) -> json {
+                json j = {{"type", "vortex_sheet"},       {"camber", camberName(e.camber)}, {"x", e.position.x},
+                          {"y", e.position.y},            {"chord", e.chord},               {"angle_deg", e.angle * k_degrees},
+                          {"panels", e.panels}};
+                if (e.camber == CamberLine::Naca) {
+                    j["naca_camber"] = e.nacaCamber;
+                    j["naca_position"] = e.nacaPosition;
+                }
+                if (e.camber == CamberLine::Arc) j["arc_camber"] = e.arcCamber;
+                return j;
+            },
         },
         element);
 }
@@ -73,6 +108,43 @@ SceneElement elementFromJson(const json& j) {
                           .wall2 = num("theta2_deg") / k_degrees};
     }
     if (type == "wall") return SymmetryWall{.point = point(), .angle = num("angle_deg") / k_degrees};
+    if (type == "source_panels") {
+        const std::string shape = j.at("shape").get<std::string>();
+        PanelBody body{.position = point(),
+                       .semiAxisA = num("a"),
+                       .semiAxisB = num("b"),
+                       .angle = j.value("angle_deg", 0.0) / k_degrees,
+                       .panels = j.at("panels").get<int>()};
+        const auto known = std::ranges::find_if(k_panelShapes, [&](PanelShape s) { return shape == shapeName(s); });
+        if (known == k_panelShapes.end()) throw std::runtime_error("unknown panel body shape \"" + shape + "\"");
+        body.shape = *known;
+        if (body.shape == PanelShape::Naca) {
+            body.nacaCamber = j.at("naca_camber").get<int>();
+            body.nacaPosition = j.at("naca_position").get<int>();
+        }
+        if (body.shape == PanelShape::Custom) {
+            body.name = j.value("name", std::string());
+            body.smooth = j.value("smooth", true);
+            for (const json& p : j.at("outline")) body.outline.push_back({p.at(0).get<double>(), p.at(1).get<double>()});
+        }
+        return body;
+    }
+    if (type == "vortex_sheet") {
+        const std::string camber = j.at("camber").get<std::string>();
+        ThinAirfoil airfoil{.position = point(),
+                            .chord = num("chord"),
+                            .angle = j.value("angle_deg", 0.0) / k_degrees,
+                            .panels = j.at("panels").get<int>()};
+        const auto known = std::ranges::find_if(k_camberLines, [&](CamberLine c) { return camber == camberName(c); });
+        if (known == k_camberLines.end()) throw std::runtime_error("unknown camber line \"" + camber + "\"");
+        airfoil.camber = *known;
+        if (airfoil.camber == CamberLine::Naca) {
+            airfoil.nacaCamber = j.at("naca_camber").get<int>();
+            airfoil.nacaPosition = j.at("naca_position").get<int>();
+        }
+        if (airfoil.camber == CamberLine::Arc) airfoil.arcCamber = num("arc_camber");
+        return airfoil;
+    }
     throw std::runtime_error("unknown element type \"" + type + "\"");
 }
 
@@ -99,6 +171,7 @@ json plotToJson(const PlotSettings& p) {
             {"background", backgroundName(p.background)},
             {"surface_pressure", p.showSurfacePressure},
             {"stagnation_points", p.showStagnationPoints},
+            {"panel_strengths", p.showPanelStrengths},
             {"particles", p.showParticles},
             {"particle_trails", p.particleTrails}};
 }
@@ -124,6 +197,7 @@ PlotSettings plotFromJson(const json& j) {
     }
     p.showSurfacePressure = j.value("surface_pressure", p.showSurfacePressure);
     p.showStagnationPoints = j.value("stagnation_points", p.showStagnationPoints);
+    p.showPanelStrengths = j.value("panel_strengths", p.showPanelStrengths);
     p.showParticles = j.value("particles", p.showParticles);
     p.particleTrails = j.value("particle_trails", p.particleTrails);
     return p;

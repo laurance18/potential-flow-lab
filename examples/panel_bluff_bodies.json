@@ -1,0 +1,10 @@
+{
+  "format": "pfl-scene",
+  "version": 1,
+  "elements": [
+    {"type": "uniform", "speed": 1, "alpha_deg": 0},
+    {"type": "source_panels", "shape": "rectangle", "x": -1.5, "y": 0, "a": 0.6, "b": 0.6, "angle_deg": 0, "panels": 48},
+    {"type": "source_panels", "shape": "ellipse", "x": 1.6, "y": 0.5, "a": 0.6, "b": 0.6, "angle_deg": 0, "panels": 40}
+  ],
+  "plot": {"x_min": -4, "x_max": 4, "y_min": -2.5, "y_max": 2.5, "streamline_density": 24, "arrows": true, "arrow_spacing_px": 110, "show_images": true, "particles": true, "particle_trails": true, "background": "cp", "panel_strengths": true}
+}

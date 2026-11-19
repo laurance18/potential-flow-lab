@@ -37,8 +37,9 @@ TEST_CASE("every element kind lists its parameters, and they read and write the 
         REQUIRE_FALSE(parameters.empty());
         for (const ElementParameter& p : parameters) {
             const double before = p.get(element);
-            p.set(element, before + 0.125);
-            CHECK(p.get(element) == doctest::Approx(before + 0.125));
+            const double step = p.kind == ParameterKind::Count ? 1.0 : 0.125; // counts are whole numbers
+            p.set(element, before + step);
+            CHECK(p.get(element) == doctest::Approx(before + step));
             p.set(element, before);
         }
         if (const std::optional<Vec2> anchor = anchorPoint(element)) {
@@ -107,7 +108,8 @@ TEST_CASE("sweep CSV: stagnation and body rows for every step") {
     std::vector<SweepSample> samples;
     for (const double value : sweepValues(0.0, pi, 3)) samples.push_back(*sampleSweep(scene, {2, 0}, value, k_view));
     const std::string csv = sweepCsv(samples);
-    CHECK(csv.starts_with("step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact\n"));
+    CHECK(csv.starts_with("step,value,kind,index,x,y,closed,chord,circulation,lift_q,drag_q,cl,cd,cp_min,lift_q_exact,"
+                          "alpha_deg,cm_c4,cl_thin,cm_c4_thin\n"));
     CHECK(countLines(csv, ",stagnation,") == 6);
     CHECK(countLines(csv, ",body,") == 3);
     CHECK(countLines(csv, "\n") == 1 + 6 + 3);

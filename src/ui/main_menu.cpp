@@ -73,6 +73,13 @@ void drawViewMenu(PlotSettings& plot, bool parameterPanel, MainMenuActions& acti
                           "and the integrated lift and drag.");
     actions.plotChanged |= ImGui::Checkbox("Stagnation points", &plot.showStagnationPoints);
     ImGui::SetItemTooltip("Mark the points where the velocity is zero (Cp = 1) with diamonds.");
+    actions.plotChanged |= ImGui::Checkbox("Panel strengths (λ, γ)", &plot.showPanelStrengths);
+    ImGui::SetItemTooltip("On every source-panel body, a stick on each panel with its length proportional to the\n"
+                          "panel's source strength λ: outwards (green) for a source, inwards (red) for a sink.\n"
+                          "On every vortex-sheet airfoil, a stick at each vertex proportional to the vortex strength γ:\n"
+                          "above the camber line (amber) for γ > 0, clockwise, below it (cyan) for γ < 0.\n"
+                          "The line through their tips is the strength distribution (on an airfoil, its loading ΔCp).\n"
+                          "Hover a stick for its numbers.");
     actions.plotChanged |= ImGui::Checkbox("Tracer particles", &plot.showParticles);
     ImGui::BeginDisabled(!plot.showParticles);
     actions.plotChanged |= ImGui::Checkbox("Particle trails", &plot.particleTrails);
@@ -156,6 +163,10 @@ MainMenuActions drawMainMenu(const Scene& scene, PlotSettings& plot, const MainM
             if (ImGui::MenuItem("Open...", "Ctrl+O")) actions.open = true;
             if (ImGui::MenuItem("Save", "Ctrl+S")) actions.save = true;
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) actions.saveAs = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Import airfoil coordinates (.dat)...")) actions.importAirfoil = true;
+            ImGui::SetItemTooltip("Read an airfoil's x y points (Selig or Lednicer layout, as in the UIUC airfoil\n"
+                                  "database) into a new source-panel body, then adjust it in the dialog.");
             ImGui::Separator();
             const bool hasFlow = !scene.elements.empty();
             if (ImGui::MenuItem("Export image (PNG)...", nullptr, false, hasFlow)) actions.exportImage = true;

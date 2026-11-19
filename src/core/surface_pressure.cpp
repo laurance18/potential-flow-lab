@@ -1,5 +1,7 @@
 #include "core/surface_pressure.hpp"
 
+#include "core/parallel.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -196,7 +198,9 @@ Branch traceBranch(const FlowField& field, const std::vector<Vec2>& stagnation, 
         const Vec2 k3 = direction(p + k2 * (0.5 * h));
         const Vec2 k4 = direction(p + k3 * h);
         if (!valid) return branch;
+        const Vec2 previous = p;
         p += (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (h / 6.0);
+        if (!field.vortexSheets.empty() && field.crossesSheet(previous, p)) return branch; // into a thin airfoil
         travelled += h;
         branch.points.push_back(p);
         if (!settings.bounds.contains(p)) {
@@ -270,8 +274,8 @@ std::optional<std::pair<std::vector<Vec2>, double>> pathTo(const Branch& branch,
     return std::pair{std::move(points), distance};
 }
 
-// W is analytic, so its derivative along x is dW/dz. Damped far from a root; stops at a root or on
-// leaving `searchArea`.
+// W is analytic, so its derivative along x is dW/dz. Damped far from a root; stops at a root, on
+// leaving `searchArea` or on entering a panel body (inside which W means nothing).
 Complex newtonOnVelocity(const FlowField& field, Complex z, const Rect& searchArea, double extent) {
     const double h = 1e-6 * extent;
     const auto w = [&field](Complex q) { return field.complexVelocity(toVec(q)); };
@@ -284,6 +288,7 @@ Complex newtonOnVelocity(const FlowField& field, Complex z, const Rect& searchAr
         if (stepLength > 0.1 * extent) step *= 0.1 * extent / stepLength;
         z -= step;
         if (!searchArea.contains(toVec(z)) || stepLength < 1e-14 * extent) break;
+        if (!field.panelBodies.empty() && field.panelBodyAt(toVec(z)) != nullptr) break;
     }
     return z;
 }
@@ -309,24 +314,220 @@ BodySurface openBody(const Branch& a, const Branch& b, const FlowModel& model) {
     return body;
 }
 
-} // namespace
+// Distance from p to the panels of a body.
+double distanceToPanels(const SourcePanels& body, Vec2 p) {
+    double best = 1e300;
+    for (std::size_t k = 0; k < body.size(); ++k) {
+        const Vec2 a = body.vertices[k];
+        const Vec2 d = body.vertices[(k + 1) % body.size()] - a;
+        const double t = std::clamp(dot(p - a, d) / lengthSquared(d), 0.0, 1.0);
+        best = std::min(best, length(p - (a + d * t)));
+    }
+    return best;
+}
 
-std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& region, double speedScale, int seedGrid) {
+double longestPanel(const SourcePanels& body) { return *std::ranges::max_element(body.lengths); }
+
+// A stagnation point on a panel body, between control points `before` and `before + 1` (mod N).
+struct SurfaceZero {
+    Vec2 point;
+    std::size_t nearest; // the control point closer to it
+};
+
+// Where the tangential speed (along the panels, clockwise) changes sign between neighbouring
+// control points. The zero is interpolated linearly along the surface, which runs from one control
+// point to the shared vertex and on to the next control point, and lifted a hair off the surface
+// into the fluid so that it counts as inside the flow domain. A control point where the speed is 0
+// to rounding (a symmetric body has one at each end) is a zero itself.
+std::vector<SurfaceZero> surfaceZeros(const FlowField& field, const SourcePanels& body) {
+    const std::size_t n = body.size();
+    std::vector<double> tangential(n);
+    double largest = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Complex t = toComplex(body.vertices[(i + 1) % n] - body.vertices[i]) / body.lengths[i];
+        tangential[i] = (field.complexVelocity(body.controlPoints[i]) * t).real();
+        largest = std::max(largest, std::abs(tangential[i]));
+    }
+    std::vector<int> sign(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        sign[i] = std::abs(tangential[i]) <= 1e-12 * largest ? 0 : tangential[i] > 0.0 ? 1 : -1;
+    }
+    const double lift = 1e-7 * body.perimeter();
+    std::vector<SurfaceZero> zeros;
+    if (!(largest > 0.0)) return zeros; // no flow at all
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t j = (i + 1) % n;
+        if (sign[i] == 0 && sign[(i + n - 1) % n] != 0 && sign[j] != 0) {
+            zeros.push_back({body.controlPoints[i] + body.normals[i] * lift, i});
+            continue;
+        }
+        const double a = tangential[i];
+        const double b = tangential[j];
+        if (sign[i] * sign[j] >= 0) continue;
+        // Fraction of the way from control point i to j, half a panel each side of the vertex.
+        const double f = a / (a - b);
+        const Vec2 vertex = body.vertices[j];
+        const bool first = f < 0.5;
+        const Vec2 on = first ? body.controlPoints[i] + (vertex - body.controlPoints[i]) * (2.0 * f)
+                              : vertex + (body.controlPoints[j] - vertex) * (2.0 * f - 1.0);
+        const Vec2 normal = first ? body.normals[i] : body.normals[j];
+        zeros.push_back({on + normal * lift, first ? i : j});
+    }
+    return zeros;
+}
+
+// The stagnation points on the two sides of a thin airfoil: where the speed along the sheet on one
+// side, the mean velocity along it plus or minus gamma/2, changes sign between two control points
+// (interpolated linearly through the vertex between them, as on a panel body), lifted a hair off
+// the sheet to that side. If the flow leaves the leading edge on both sides, the stagnation point
+// is ahead of the first control points: it is put halfway between them and the leading edge, on the
+// side the circulation turns away from (below for gamma > 0).
+std::vector<Vec2> sheetZeros(const FlowField& field, const VortexSheet& sheet) {
+    const std::size_t n = sheet.size();
+    std::vector<double> mean(n);
+    double largest = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        mean[i] = dot(field.velocity(sheet.controlPoints[i]), sheet.tangents[i]);
+        largest = std::max(largest, std::abs(mean[i]) + 0.5 * std::abs(sheet.strengthAt(i)));
+    }
+    std::vector<Vec2> zeros;
+    if (!(largest > 0.0) || n < 2) return zeros;
+    const double lift = 1e-7 * sheet.airfoil.chord;
+    const auto along = [&](std::size_t i, double side) { return mean[i] + side * 0.5 * sheet.strengthAt(i); };
+    bool leavesFront = true;
+    for (const double side : {1.0, -1.0}) {
+        leavesFront = leavesFront && along(0, side) > 0.0;
+        for (std::size_t i = 0; i + 1 < n; ++i) {
+            const double a = along(i, side);
+            const double b = along(i + 1, side);
+            if ((a > 0.0) == (b > 0.0) || a == b) continue;
+            const double f = a / (a - b);
+            const Vec2 vertex = sheet.vertices[i + 1];
+            const bool first = f < 0.5;
+            const Vec2 on = first ? sheet.controlPoints[i] + (vertex - sheet.controlPoints[i]) * (2.0 * f)
+                                  : vertex + (sheet.controlPoints[i + 1] - vertex) * (2.0 * f - 1.0);
+            zeros.push_back(on + (first ? sheet.normals[i] : sheet.normals[i + 1]) * (side * lift));
+        }
+    }
+    if (leavesFront) {
+        const double side = sheet.gamma.front() > 0.0 ? -1.0 : 1.0;
+        zeros.push_back((sheet.leadingEdge() + sheet.controlPoints[0]) * 0.5 + sheet.normals[0] * (side * lift));
+    }
+    return zeros;
+}
+
+// Newton's stagnation points, without those within a panel length of a panel body or a thin airfoil:
+// on them the stagnation points are the sign changes of the tangential speed instead.
+std::vector<Vec2> newtonStagnationPoints(const FlowField& field, const Rect& region, double speedScale, int seedGrid) {
     std::vector<Vec2> found;
     const Vec2 size = region.size();
     const double extent = std::max(size.x, size.y);
     if (!(extent > 0.0) || !(speedScale > 0.0)) return found;
     const Rect searchArea = region.expanded(0.1);
 
-    for (int j = 0; j < seedGrid; ++j) {
-        for (int i = 0; i < seedGrid; ++i) {
+    // Newton from every seed on every core; the points it reaches are merged in seed order after.
+    const std::size_t seeds = static_cast<std::size_t>(std::max(seedGrid, 0));
+    std::vector<std::optional<Vec2>> reached(seeds * seeds);
+    parallelFor(reached.size(), 8, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+            const double i = static_cast<double>(s % seeds);
+            const double j = static_cast<double>(s / seeds);
             const Vec2 seed = region.min + Vec2{size.x * (i + 0.5) / seedGrid, size.y * (j + 0.5) / seedGrid};
+            if (!field.panelBodies.empty() && field.panelBodyAt(seed) != nullptr) continue;
             const Vec2 p = toVec(newtonOnVelocity(field, toComplex(seed), searchArea, extent));
             if (!region.contains(p) || !isStagnationPoint(field, p, speedScale, extent)) continue;
-            const bool known = std::ranges::any_of(found, [&](Vec2 q) {
-                return lengthSquared(p - q) < k_mergeDistance * k_mergeDistance * extent * extent;
+            const bool nearBody = std::ranges::any_of(field.panelBodies, [p](const SourcePanels& body) {
+                return distanceToPanels(body, p) < longestPanel(body);
             });
-            if (!known) found.push_back(p);
+            const bool nearSheet = std::ranges::any_of(field.vortexSheets, [p](const VortexSheet& sheet) {
+                return sheet.distanceTo(p) < sheet.longestPanel();
+            });
+            if (!nearBody && !nearSheet) reached[s] = p;
+        }
+    });
+    for (const std::optional<Vec2>& p : reached) {
+        if (!p) continue;
+        const bool known = std::ranges::any_of(found, [&](Vec2 q) {
+            return lengthSquared(*p - q) < k_mergeDistance * k_mergeDistance * extent * extent;
+        });
+        if (!known) found.push_back(*p);
+    }
+    return found;
+}
+
+// The surface of panel body `index`, from its control points (see surface_pressure.hpp).
+BodySurface panelSurface(const FlowModel& model, std::size_t index) {
+    const FlowField& field = model.field;
+    const SourcePanels& panels = field.panelBodies[index];
+    const std::size_t n = panels.size();
+    const Vec2 e = model.freeStream / model.freeStreamSpeed;
+
+    BodySurface body;
+    body.closed = true;
+    body.panelBody = index;
+    std::vector<SurfaceZero> zeros = surfaceZeros(field, panels);
+    // Start at the front stagnation point (the most upstream one), or the most upstream point.
+    std::ranges::sort(zeros, {}, [e](const SurfaceZero& z) { return dot(z.point, e); });
+    std::size_t start = 0;
+    if (!zeros.empty()) {
+        start = zeros.front().nearest;
+    } else {
+        for (std::size_t i = 1; i < n; ++i) {
+            if (dot(panels.controlPoints[i], e) < dot(panels.controlPoints[start], e)) start = i;
+        }
+    }
+    body.firstPanel = start;
+    for (std::size_t k = 0; k <= n; ++k) {
+        body.points.push_back(panels.controlPoints[(start + k) % n]);
+        body.strength.push_back(panels.strengths[(start + k) % n]);
+    }
+    for (const SurfaceZero& zero : zeros) body.stagnationPoints.push_back(zero.point);
+    evaluateSurface(body, model, 0);
+
+    // The closed form, when the body is an ellipse alone in a uniform stream (perhaps with vortices in it).
+    if (panels.body.shape != PanelShape::Ellipse || field.panelBodies.size() != 1 || !field.vortexSheets.empty() ||
+        !field.rows.empty()) {
+        return body;
+    }
+    const PanelBody& shape = panels.body;
+    double circulation = 0.0;
+    // The sheet is the plain one if no vortex inside crosses the surface: none at all, or on a circle
+    // only at its centre, where the flow it makes is along the surface.
+    bool plainSheet = true;
+    for (const FlowElement& element : field.elements) {
+        if (std::holds_alternative<UniformFlow>(element)) continue;
+        const auto* vortex = std::get_if<Vortex>(&element);
+        if (vortex == nullptr || !panels.contains(vortex->position)) return body;
+        circulation += vortex->circulation;
+        const bool centred = length(vortex->position - shape.position) <= 1e-9 * shape.semiAxisA;
+        plainSheet = plainSheet && shape.semiAxisA == shape.semiAxisB && centred;
+    }
+    const std::vector<double> eta = ellipseMidpointParameters(shape);
+    for (std::size_t k = 0; k <= n; ++k) {
+        const double at = eta[(start + k) % n];
+        const double speed =
+            exactEllipseSurfaceSpeed(shape.semiAxisA, shape.semiAxisB, shape.angle, model.freeStream, circulation, at);
+        body.cpExact.push_back(pressureCoefficient(speed, model.freeStreamSpeed));
+        if (plainSheet) {
+            body.strengthExact.push_back(
+                exactEllipseSourceStrength(shape.semiAxisA, shape.semiAxisB, shape.angle, model.freeStream, at));
+        }
+    }
+    return body;
+}
+
+} // namespace
+
+std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& region, double speedScale, int seedGrid) {
+    std::vector<Vec2> found = newtonStagnationPoints(field, region, speedScale, seedGrid);
+    for (const SourcePanels& body : field.panelBodies) {
+        for (const SurfaceZero& zero : surfaceZeros(field, body)) {
+            if (region.contains(zero.point)) found.push_back(zero.point);
+        }
+    }
+    for (const VortexSheet& sheet : field.vortexSheets) {
+        for (const Vec2 zero : sheetZeros(field, sheet)) {
+            if (region.contains(zero)) found.push_back(zero);
         }
     }
     return found;
@@ -334,6 +535,24 @@ std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& regio
 
 std::optional<Vec2> followStagnationPoint(const FlowField& field, Vec2 from, double reach, double speedScale) {
     if (!(reach > 0.0) || !(speedScale > 0.0)) return std::nullopt;
+    for (const VortexSheet& sheet : field.vortexSheets) {
+        if (sheet.distanceTo(from) > 2.0 * sheet.longestPanel()) continue;
+        std::optional<Vec2> nearest;
+        for (const Vec2 zero : sheetZeros(field, sheet)) {
+            if (length(zero - from) <= reach && (!nearest || length(zero - from) < length(*nearest - from))) nearest = zero;
+        }
+        return nearest;
+    }
+    for (const SourcePanels& body : field.panelBodies) {
+        if (distanceToPanels(body, from) > 2.0 * longestPanel(body)) continue;
+        std::optional<Vec2> nearest;
+        for (const SurfaceZero& zero : surfaceZeros(field, body)) {
+            if (length(zero.point - from) <= reach && (!nearest || length(zero.point - from) < length(*nearest - from))) {
+                nearest = zero.point;
+            }
+        }
+        return nearest;
+    }
     const Vec2 corner{reach, reach};
     const Vec2 p = toVec(newtonOnVelocity(field, toComplex(from), {from - corner, from + corner}, reach));
     if (!(length(p - from) <= reach) || !isStagnationPoint(field, p, speedScale, reach)) return std::nullopt;
@@ -357,8 +576,10 @@ StreamlineSet dividingStreamlines(const FlowField& field, Vec2 point, std::vecto
 
     const double radius = circleRadius(field, stagnation, 0, extent);
     for (const auto& [angle, outgoing] : branchDirections(field, point, radius)) {
-        // At a sector vertex the velocity formula also has radial directions outside the wedge.
-        if (!field.inDomain(point + Vec2{std::cos(angle), std::sin(angle)} * radius)) continue;
+        // At a sector vertex the velocity formula also has radial directions outside the wedge; at a
+        // stagnation point on a thin airfoil, directions on the far side of the sheet.
+        const Vec2 end = point + Vec2{std::cos(angle), std::sin(angle)} * radius;
+        if (!field.inDomain(end) || field.crossesSheet(point, end)) continue;
         std::vector<Vec2> line = traceBranch(field, stagnation, 0, angle, outgoing, radius, trace).points;
         if (!outgoing) std::ranges::reverse(line);
 
@@ -383,11 +604,13 @@ std::vector<BodySurface> findBodySurfaces(const FlowModel& model, const Rect& vi
     std::vector<BodySurface> bodies;
     if (!(model.freeStreamSpeed > 0.0)) return bodies;
     const FlowField& field = model.field;
+    for (std::size_t i = 0; i < field.panelBodies.size(); ++i) bodies.push_back(panelSurface(model, i));
     const std::optional<Rect> region = bodyRegion(field, model.freeStreamSpeed);
     if (!region) return bodies;
 
+    // Not the stagnation points on panel bodies: their surfaces are known already.
     const std::vector<Vec2> stagnation =
-        findStagnationPoints(field, *region, model.freeStreamSpeed, settings.seedGrid);
+        newtonStagnationPoints(field, *region, model.freeStreamSpeed, settings.seedGrid);
     const double extent = std::max(region->size().x, region->size().y);
     const Rect shown = view.expanded(0.05);
     TraceSettings trace;
@@ -472,7 +695,10 @@ BodyForces bodyForces(const BodySurface& body, const FlowModel& model) {
     forces.lift = dot(force, perp(e));
     forces.chord = hi - lo;
 
-    forces.isolated = true;
+    // Any other panel body (or a thin airfoil) is another body.
+    const std::size_t panelBodies = model.field.panelBodies.size();
+    forces.isolated = (panelBodies == 0 || (panelBodies == 1 && body.panelBody.has_value())) &&
+                      model.field.vortexSheets.empty();
     for (const FlowElement& element : model.field.elements) {
         if (std::holds_alternative<SectorFlow>(element)) forces.isolated = false;
         const std::optional<Vec2> centre = singularPoint(element);
@@ -501,6 +727,9 @@ double CylinderReference::cp(double theta) const {
 
 std::optional<CylinderReference> cylinderReference(const BodySurface& body, const FlowModel& model) {
     if (!body.closed || !(model.freeStreamSpeed > 0.0) || !model.field.rows.empty()) return std::nullopt;
+    if (body.panelBody || !model.field.panelBodies.empty() || !model.field.vortexSheets.empty()) {
+        return std::nullopt; // see BodySurface::cpExact
+    }
     const Doublet* doublet = nullptr;
     const Vortex* vortex = nullptr;
     for (const FlowElement& element : model.field.elements) {

@@ -29,7 +29,11 @@ Scene everythingScene() {
                       Vortex{.circulation = -3.0, .position = {0.7, 1.1}},
                       Doublet{.strength = 0.4, .position = {1.5, 1.4}, .angle = 35.0 * deg},
                       SectorFlow{.strength = 0.8, .vertex = {-3.0, -2.0}, .wall1 = 10.0 * deg, .wall2 = 100.0 * deg},
-                      SymmetryWall{.point = {0.0, -0.5}, .angle = 7.0 * deg}};
+                      SymmetryWall{.point = {0.0, -0.5}, .angle = 7.0 * deg},
+                      PanelBody{.shape = PanelShape::Rectangle, .position = {-1.0, 1.7}, .semiAxisA = 0.35,
+                                .semiAxisB = 0.2, .angle = 20.0 * deg, .panels = 24},
+                      ThinAirfoil{.camber = CamberLine::Arc, .position = {2.3, 0.6}, .chord = 1.2, .angle = -6.0 * deg,
+                                  .panels = 30, .arcCamber = 0.04}};
     scene.rakes.push_back({.start = {-2.0, 0.0}, .end = {-1.0, 1.5}, .emitters = 7});
     scene.plot.view = {{-3.5, -2.2}, {4.5, 2.8}};
     scene.plot.streamlineDensity = 31;
@@ -40,6 +44,7 @@ Scene everythingScene() {
     scene.plot.background = Background::PressureCoefficient;
     scene.plot.showSurfacePressure = true;
     scene.plot.showStagnationPoints = false;
+    scene.plot.showPanelStrengths = true;
     scene.plot.showParticles = false;
     scene.plot.particleTrails = false;
     return scene;
@@ -83,7 +88,8 @@ bool samePlotSettings(const PlotSettings& a, const PlotSettings& b) {
     return a.streamlineDensity == b.streamlineDensity && a.showArrows == b.showArrows &&
            a.showImages == b.showImages && a.showEquipotentials == b.showEquipotentials &&
            a.background == b.background && a.showSurfacePressure == b.showSurfacePressure &&
-           a.showStagnationPoints == b.showStagnationPoints && a.showParticles == b.showParticles &&
+           a.showStagnationPoints == b.showStagnationPoints && a.showPanelStrengths == b.showPanelStrengths &&
+           a.showParticles == b.showParticles &&
            a.particleTrails == b.particleTrails && std::abs(a.arrowSpacingPx - b.arrowSpacingPx) < 1e-12 &&
            length(a.view.min - b.view.min) < 1e-12 && length(a.view.max - b.view.max) < 1e-12;
 }
@@ -127,7 +133,7 @@ VerificationResult saveAndReopen() {
     r.errorLabel = "max relative change of any parameter, and max distance between the points of the streamlines";
     for (const std::vector<Vec2>& line : before.lines) r.samples += static_cast<int>(line.size());
     const auto shown = [](double x) { return x == 0.0 ? std::string("0") : std::format("{:.1e}", x); };
-    r.comparisons = {{"Elements reopened", std::to_string(reopened.elements.size()), "6, one of each kind"},
+    r.comparisons = {{"Elements reopened", std::to_string(reopened.elements.size()), std::format("{}, one of each kind", k_elementKinds.size())},
                      {"Largest change of a parameter", shown(elements), "0"},
                      {"Rakes", rakes ? "the same" : "different", "the same"},
                      {"View and plot settings", settings ? "the same" : "different", "the same"},

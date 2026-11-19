@@ -13,7 +13,7 @@ constexpr float k_padding = 6.0f;
 
 float toolbarWidth() { return (k_buttonSize + 2.0f * k_padding) * uiScale(); }
 
-ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake) {
+ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake, bool drawingBody) {
     ToolbarAction action;
     const float s = uiScale();
     const float button = k_buttonSize * s;
@@ -39,11 +39,23 @@ ToolbarAction drawToolbar(ImVec2 pos, ImVec2 size, bool placingRake) {
         return (min + max) * 0.5f;
     };
     for (const ElementKind kind : k_elementKinds) {
+        if (isPanelKind(kind) && !isPanelKind(k_elementKinds[static_cast<std::size_t>(kind) - 1])) ImGui::Separator(); // panel methods
         ImGui::PushID(static_cast<int>(kind));
         if (ImGui::InvisibleButton("##tool", ImVec2(button, button))) action.element = kind;
         drawToolIcon(dl, buttonBackground(false), 0.78f * button, kind);
-        ImGui::SetItemTooltip("%s", kindName(kind));
+        if (kind == ElementKind::ThinAirfoil) {
+            ImGui::SetItemTooltip("%s\nThin-airfoil theory: a vortex sheet on the camber line, with the Kutta condition "
+                                  "at the trailing edge.", kindName(kind));
+        } else {
+            ImGui::SetItemTooltip("%s", kindName(kind));
+        }
         ImGui::PopID();
+        if (kind == ElementKind::PanelBody) {
+            if (ImGui::InvisibleButton("##draw-body", ImVec2(button, button))) action.drawBody = true;
+            drawOutlineToolIcon(dl, buttonBackground(drawingBody), 0.78f * button);
+            ImGui::SetItemTooltip("Draw a source-panel body\nClick points around the shape (or drag to sketch it), then "
+                                  "click the first point to close it.");
+        }
     }
 
     ImGui::Separator();

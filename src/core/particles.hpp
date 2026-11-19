@@ -4,8 +4,14 @@
 // Particles respawn uniformly inside the bounds when they leave them, reach a position the caller
 // rejects (outside the flow domain, too close to a singular point), or exceed maxAge (stops
 // everything collapsing onto a few paths).
+//
+// The particles are advected on every core (core/parallel.hpp); the velocity and validity callables
+// must be safe to call from several threads at once (FlowField's are). The respawns, which draw from
+// the one random number generator, follow on the calling thread in particle order, so a step gives
+// exactly the same particles however many threads ran.
 #pragma once
 
+#include "core/parallel.hpp"
 #include "core/vec2.hpp"
 
 #include <algorithm>
@@ -78,19 +84,26 @@ private:
 
     ParticleSettings m_settings;
     std::vector<Particle> m_particles;
+    std::vector<unsigned char> m_respawn; // per particle, during step()
     std::mt19937 m_rng;
 };
 
+inline constexpr std::size_t k_particleGrain = 128; // particles per range of the parallel loop
+
 template <typename VelocityFn, typename ValidFn>
 void ParticleSystem::step(double dt, const VelocityFn& velocity, const ValidFn& isValid) {
-    for (Particle& p : m_particles) {
-        p.speed = advect(p.pos, dt, velocity, m_settings.maxStepLength, m_settings.maxSubsteps);
-        p.age += dt;
-
-        const bool finite = std::isfinite(p.pos.x) && std::isfinite(p.pos.y);
-        if (!finite || !m_settings.bounds.contains(p.pos) || p.age > m_settings.maxAge || !isValid(p.pos)) {
-            respawn(p, isValid);
+    m_respawn.assign(m_particles.size(), 0);
+    parallelFor(m_particles.size(), k_particleGrain, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            Particle& p = m_particles[i];
+            p.speed = advect(p.pos, dt, velocity, m_settings.maxStepLength, m_settings.maxSubsteps);
+            p.age += dt;
+            const bool finite = std::isfinite(p.pos.x) && std::isfinite(p.pos.y);
+            m_respawn[i] = !finite || !m_settings.bounds.contains(p.pos) || p.age > m_settings.maxAge || !isValid(p.pos);
         }
+    });
+    for (std::size_t i = 0; i < m_particles.size(); ++i) {
+        if (m_respawn[i] != 0) respawn(m_particles[i], isValid);
     }
 }
 

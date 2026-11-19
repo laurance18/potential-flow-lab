@@ -2,8 +2,14 @@
 
 An interactive 2D potential-flow simulator in C++20, built as a senior mechanical-engineering
 semester project. It superposes elementary flows (uniform flow, source/sink, vortex, doublet,
-sector flow) and straight symmetry walls, draws evenly spaced streamlines with direction arrows,
-equipotential lines and velocity-magnitude contours, and animates tracer particles on the GPU.
+sector flow) and straight symmetry walls, solves bodies of any shape with the source panel
+method (ellipses, rectangles, NACA 4-digit airfoils, outlines drawn on the plot or imported from
+airfoil coordinate files), models thin airfoils as a vortex sheet on the camber line with the Kutta
+condition (thin-airfoil theory), draws evenly spaced streamlines with direction arrows, equipotential
+lines and velocity-magnitude contours, and animates tracer particles (stepped on every CPU core,
+drawn on the GPU). Particles, dye, contours, stagnation points and the live streamlines all run in
+parallel, with the same results as on one core, and panel bodies are summed by grouped far-field
+series near them.
 
 - Left toolbar: one icon per element type (hover for the name); a click opens a parameter dialog
   with Apply / Cancel. Below them, the dye rake tool.
@@ -33,11 +39,25 @@ equipotential lines and velocity-magnitude contours, and animates tracer particl
   equipotential polylines, CSV surface Cp of the bodies, and MP4/GIF recordings. The exports also
   run from the command line.
 - **View** menu: streamline density, arrows, wall images, equipotential lines, a |V| or Cp
-  background, surface pressure, stagnation point markers, tracer particles.
-- **Verify** menu (F5): 44 checks run in front of you. Each compares the program with an exact
+  background, surface pressure, stagnation point markers, panel source strengths, tracer particles.
+- **Source-panel bodies**: an ellipse, circle, rectangle, NACA 4-digit airfoil, an outline drawn
+  with the pencil tool or airfoil coordinates imported from a `.dat` file (File menu), cut into N
+  straight source panels whose strengths are solved so no fluid crosses the surface at the control
+  points, in the flow of every other element and body. Surface Cp at the control points against the exact ellipse solution,
+  interior masked, a vortex inside gives the body circulation (lifting cylinder). View → Panel
+  source strengths draws each panel's λ as a stick on the body, and the Cp panel plots λ against
+  the exact source sheet.
+- **Vortex-sheet airfoils** (thin-airfoil theory): a flat plate, NACA 4-digit mean line or circular
+  arc as a vortex sheet γ on the camber line, cut into N linear-strength vortex panels with the Kutta
+  condition γ(TE) = 0, solved together with the source-panel bodies. The Cp panel plots ΔCp = 2γ/V∞
+  along the chord over the thin-airfoil curve, with A₀–A₃, c_l (Kutta–Joukowski and from ΔCp),
+  c_m,c/4 and α_L0 beside the theory; sweep α for a c_l–α line in the sweep CSV.
+- **Verify** menu (F5): 61 checks run in front of you. Each compares the program with an exact
   result: elementary flows over a whole grid, Laplace's equation, the cylinder and Rankine bodies,
   dividing streamlines, wall and channel images, surface Cp, d'Alembert, Kutta–Joukowski and
-  Blasius, the streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
+  Blasius, the source panel method (exact on a cylinder, converging on an ellipse), thin airfoils (a flat
+  plate's 2π sin α, the NACA 2412 mean line, a circular arc against its conformal map), the
+  streamlines and arrows themselves, particles, dye, and saving and reopening a scene.
   Each check shows its error against its tolerance and the program's numbers beside theory, and can
   load its flow into the plot.
 - **Help** menu: the user guide (F1) built into the exe, with chapters and a search box; the sign

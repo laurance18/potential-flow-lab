@@ -19,6 +19,11 @@
 // one stagnation point and both run out of the region bound an open body (Rankine half-body), and
 // likewise two that arrive at one (the half-body of a sink).
 //
+// Source-panel bodies (panel_method.hpp) need no tracing: their surface is given, and the panel
+// method gives the surface speed at the panel midpoints (the control points), so those are the
+// surface points, and the stagnation points on it are where the tangential speed changes sign
+// between two of them (interpolated linearly). They come first in the list, in scene order.
+//
 // Limitations: only bodies with stagnation points on them are found. A cylinder with
 // Gamma > 4 pi a V_inf has its single stagnation point off the surface; what is found then is the
 // closed dividing streamline around it, which encloses the fluid circulating with the cylinder
@@ -63,6 +68,18 @@ struct BodySurface {
     // distance between its stagnation points. (A Rankine oval at incidence, for instance, is not
     // closed at all: part of the source's fluid escapes downstream.)
     double closureGap = 0.0;
+    // A source-panel body: its index in FlowField::panelBodies. Its points are the control points,
+    // points[k] that of panel (firstPanel + k) mod N.
+    std::optional<std::size_t> panelBody;
+    std::size_t firstPanel = 0;
+    // Closed-form Cp at every point where it is known (a panel ellipse or circle alone in a uniform
+    // stream, perhaps with vortices inside it, see exactEllipseSurfaceSpeed()); otherwise empty.
+    std::vector<double> cpExact;
+    // A panel body: the source strength lambda of the panel of each point (per unit length; > 0 pushes
+    // fluid out of the surface), and that of the exact continuous sheet where it is known (an ellipse
+    // alone in a uniform stream, or a circle with vortices only at its centre), else empty.
+    std::vector<double> strength;
+    std::vector<double> strengthExact;
 };
 
 struct SurfaceSettings {
@@ -72,11 +89,13 @@ struct SurfaceSettings {
 };
 
 // The stagnation points of `field` inside `region` (excluding singular points), deduplicated.
-// `speedScale` sets the |W| that counts as zero (1e-9 of it).
+// `speedScale` sets the |W| that counts as zero (1e-9 of it). On a panel body they are the points
+// where the tangential speed changes sign, a hair outside the surface.
 std::vector<Vec2> findStagnationPoints(const FlowField& field, const Rect& region, double speedScale, int seedGrid = 32);
 
 // The stagnation point Newton's method reaches from `from`, if it is within `reach`: where a known
-// stagnation point has moved to after a small change of the flow. Nullopt if it has gone.
+// stagnation point has moved to after a small change of the flow (on a panel body: the nearest one
+// on the surface). Nullopt if it has gone.
 std::optional<Vec2> followStagnationPoint(const FlowField& field, Vec2 from, double reach, double speedScale);
 
 // The dividing streamlines through the stagnation point `point`: the lines of step 2 above, traced
@@ -100,6 +119,7 @@ struct BodyForces {
     double circulation = 0.0; // sum of the clockwise vortex strengths inside the body
     // Every singular point of the flow is inside the body (no other bodies, walls or sector flows),
     // so the exact values are D' = 0 (d'Alembert) and L' / q_inf = 2 Gamma / V_inf (Kutta-Joukowski).
+    // A panel body is another body, so no body is isolated when there are others.
     bool isolated = false;
 };
 BodyForces bodyForces(const BodySurface& body, const FlowModel& model);

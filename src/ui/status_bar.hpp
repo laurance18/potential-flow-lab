@@ -19,6 +19,7 @@ namespace pfl {
 struct ProbeInfo {
     Vec2 position;
     bool inDomain = true;
+    std::optional<std::size_t> insideBody; // 1-based element number of the panel body under the mouse
     Vec2 velocity;
     std::optional<double> pressureCoefficient;
 };
@@ -29,10 +30,23 @@ struct WallStatus {
     int samples = 0;
 };
 
+// The boundary condition on a source-panel body, and its net source strength (0 for the exact
+// solution of a closed body), relative to the perimeter times the free-stream speed. For a
+// vortex-sheet airfoil: the boundary condition and its circulation.
+struct PanelStatus {
+    std::size_t number = 0; // 1-based element number
+    int panels = 0;
+    double relativeNormalSpeed = 0.0;
+    double relativeNetSource = 0.0;
+    bool airfoil = false;
+    double circulation = 0.0; // an airfoil's Gamma
+};
+
 struct StatusInfo {
     std::optional<ProbeInfo> probe;
     std::size_t streamlineCount = 0;
     std::vector<WallStatus> walls;
+    std::vector<PanelStatus> panelBodies;
     std::vector<std::string> warnings;
 };
 

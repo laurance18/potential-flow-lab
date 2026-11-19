@@ -1,0 +1,9 @@
+{
+  "format": "pfl-scene",
+  "version": 1,
+  "elements": [
+    {"type": "uniform", "speed": 1, "alpha_deg": 0},
+    {"type": "source_panels", "shape": "outline", "x": -0.416, "y": 0.0, "a": 1.664, "b": 0.8, "angle_deg": 0, "panels": 80, "name": "drawn bean", "smooth": true, "outline": [[1.248, 0.0], [1.038, 0.346], [0.598, 0.519], [0.196, 0.594], [-0.237, 0.719], [-0.922, 0.8], [-1.713, 0.571], [-2.08, 0.0], [-1.713, -0.571], [-0.922, -0.8], [-0.237, -0.719], [0.196, -0.594], [0.598, -0.519], [1.038, -0.346]]}
+  ],
+  "plot": {"x_min": -4, "x_max": 4, "y_min": -2.5, "y_max": 2.5, "streamline_density": 24, "arrows": true, "arrow_spacing_px": 110, "show_images": true, "particles": true, "particle_trails": true, "surface_pressure": true, "panel_strengths": true, "background": "cp"}
+}

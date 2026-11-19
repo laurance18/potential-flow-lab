@@ -46,6 +46,9 @@ CommandLine parseCommandLine();
 std::optional<std::filesystem::path> showOpenSceneDialog(GLFWwindow* owner);
 std::optional<std::filesystem::path> showSaveSceneDialog(GLFWwindow* owner, const std::filesystem::path& suggested);
 
+// Open dialog for airfoil coordinate files (*.dat, *.txt).
+std::optional<std::filesystem::path> showOpenAirfoilDialog(GLFWwindow* owner);
+
 // Save As dialogs for exports.
 std::optional<std::filesystem::path> showSavePngDialog(GLFWwindow* owner, const std::filesystem::path& suggested);
 std::optional<std::filesystem::path> showSaveCsvDialog(GLFWwindow* owner, const std::filesystem::path& suggested);

@@ -1,10 +1,13 @@
 #include "core/streamline.hpp"
 
+#include "core/parallel.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <deque>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <utility>
 
 namespace pfl {
@@ -64,6 +67,22 @@ private:
     std::vector<std::vector<Vec2>> m_cells;
 };
 
+// A line traced from a seed with no other lines around; the last point is the seed again if it
+// closed on itself, and `closing` is where that last step really ended.
+struct Trajectory {
+    std::vector<Vec2> points;
+    Vec2 closing;
+    bool closed = false;
+};
+
+// Both directions from a seed, traced ahead of time (the backward one only if the forward one does
+// not close on itself).
+struct Speculation {
+    Trajectory forward;
+    Trajectory backward;
+    bool hasBackward = false;
+};
+
 class Tracer {
 public:
     Tracer(const FlowField& field, const StreamlineSettings& settings, double minSpeed)
@@ -71,6 +90,8 @@ public:
         for (const FlowElement& e : field.elements) {
             if (const std::optional<Vec2> centre = singularPoint(e)) m_centres.push_back(*centre);
         }
+        // The flow turns round a thin airfoil's leading edge in a tiny space.
+        for (const VortexSheet& sheet : field.vortexSheets) m_centres.push_back(sheet.leadingEdge());
     }
 
     // Step of at most |h|, shortened near singular points where streamlines curve tightly.
@@ -103,28 +124,57 @@ public:
         if (!k3) return std::nullopt;
         const auto k4 = direction(p + *k3 * h);
         if (!k4 || dot(*k1, *k4) < 0.0) return std::nullopt; // stepped across a stagnation point
-        return p + (*k1 + *k2 * 2.0 + *k3 * 2.0 + *k4) * (h / 6.0);
+        const Vec2 next = p + (*k1 + *k2 * 2.0 + *k3 * 2.0 + *k4) * (h / 6.0);
+        if (!m_field.vortexSheets.empty() && m_field.crossesSheet(p, next)) return std::nullopt; // cut through a thin airfoil
+        return next;
     }
 
-    // Points from `seed` (included) in one direction. Sets `closed` if the line returned to its seed.
-    std::vector<Vec2> trace(Vec2 seed, double h, const OccupancyGrid& grid, bool& closed) const {
-        std::vector<Vec2> points{seed};
+    // The line from `seed` (included) in one direction, stopping near the lines in `grid`: other
+    // lines only decide where a line stops, not where it goes. With the grid as it is before more
+    // lines are added, the result holds every point the line keeps later (cut() with the fuller
+    // grid). Safe to run on several threads at once while nobody changes the grid.
+    Trajectory run(Vec2 seed, double h, const OccupancyGrid& grid) const {
+        Trajectory t;
+        t.points = {seed};
         const double stopDistance = k_stopFactor * m_settings.separation;
         double travelled = 0.0;
-        closed = false;
-        while (static_cast<int>(points.size()) < m_settings.maxPointsPerLine) {
-            const double hLocal = localStep(points.back(), h);
-            const std::optional<Vec2> next = step(points.back(), hLocal);
+        while (static_cast<int>(t.points.size()) < m_settings.maxPointsPerLine) {
+            const double hLocal = localStep(t.points.back(), h);
+            const std::optional<Vec2> next = step(t.points.back(), hLocal);
             if (!next || grid.near(*next, stopDistance)) break;
             travelled += std::abs(hLocal);
             if (travelled > 3.0 * m_settings.separation && length(*next - seed) < std::abs(hLocal)) {
-                points.push_back(seed);
-                closed = true;
+                t.points.push_back(seed); // closed on itself
+                t.closing = *next;
+                t.closed = true;
                 break;
             }
-            points.push_back(*next);
+            t.points.push_back(*next);
         }
-        return points;
+        return t;
+    }
+
+    // The part of `t` that is kept with the lines in `grid`: up to its first point within half a
+    // separation of one of them. Sets `closed` if the line still returns to its seed.
+    std::vector<Vec2> cut(const Trajectory& t, const OccupancyGrid& grid, bool& closed) const {
+        const double stopDistance = k_stopFactor * m_settings.separation;
+        closed = false;
+        for (std::size_t k = 1; k < t.points.size(); ++k) {
+            const bool closing = t.closed && k + 1 == t.points.size();
+            if (grid.near(closing ? t.closing : t.points[k], stopDistance)) {
+                return {t.points.begin(), t.points.begin() + static_cast<std::ptrdiff_t>(k)};
+            }
+        }
+        closed = t.closed;
+        return t.points;
+    }
+
+    // Points from `seed` (included) in one direction, stopping near the lines in `grid`. Sets
+    // `closed` if the line returned to its seed.
+    std::vector<Vec2> trace(Vec2 seed, double h, const OccupancyGrid& grid, bool& closed) const {
+        const Trajectory t = run(seed, h, grid);
+        closed = t.closed;
+        return t.points;
     }
 
     // The nearest point along the streamline through `seed`, within `maxArc` either way, that has
@@ -251,8 +301,9 @@ StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSetting
     // room the picture would end up about a fifth sparser than seeded afresh).
     const double room = (previousSeeds.empty() ? k_seedFactor : k_keepFactor) * settings.separation;
 
-    // `phase`: the arrow offset of a kept seed; nullopt for a new seed.
-    auto tryLine = [&](Vec2 seed, std::optional<double> phase) {
+    // `phase`: the arrow offset of a kept seed; nullopt for a new seed. `ahead`: the line traced from
+    // `seed` ahead of time with no other lines around, which the lines in the grid now cut short.
+    auto tryLine = [&](Vec2 seed, std::optional<double> phase, const Speculation* ahead) {
         if (!tracer.direction(seed)) return;
         if (grid.near(seed, room)) {
             // A kept seed crowded by the lines before it: the same streamline may still have room a
@@ -261,17 +312,19 @@ StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSetting
             const auto slid = tracer.slideToRoom(seed, h, grid, room, k_slideSeparations * settings.separation);
             if (!slid) return;
             seed = slid->first;
+            ahead = nullptr; // a different seed
             if (settings.arrowSpacing > 0.0) {
                 const double shifted = *phase - slid->second / settings.arrowSpacing;
                 phase = shifted - std::floor(shifted);
             }
         }
         bool closed = false;
-        std::vector<Vec2> forward = tracer.trace(seed, h, grid, closed);
+        std::vector<Vec2> forward = ahead ? tracer.cut(ahead->forward, grid, closed) : tracer.trace(seed, h, grid, closed);
         std::vector<Vec2> line;
         if (!closed) {
             bool ignored = false;
-            std::vector<Vec2> backward = tracer.trace(seed, -h, grid, ignored);
+            std::vector<Vec2> backward = ahead && ahead->hasBackward ? tracer.cut(ahead->backward, grid, ignored)
+                                                                     : tracer.trace(seed, -h, grid, ignored);
             line.assign(backward.rbegin(), backward.rend() - 1); // upstream part, without the seed
         }
         const std::size_t seedIndex = line.size();
@@ -300,16 +353,34 @@ StreamlineSet computeStreamlines(const FlowField& field, const StreamlineSetting
         result.lines.push_back(std::move(line));
     };
 
-    // The previous lines first, in their order, so the same lines come back; then the gaps.
-    for (const StreamlineSeed& seed : previousSeeds) tryLine(seed.position, seed.arrowPhase);
+    // The previous lines first, in their order, so the same lines come back. Each is traced ahead of
+    // time on every core, stopping only at the edges, the bodies and the singular points; then they
+    // are tried one after another as before, each cut short by the lines found before it, which gives
+    // exactly the lines tried one at a time would. Nearly every kept seed keeps its line, so little
+    // of that work is lost, and this is what runs every frame while something is dragged.
+    std::vector<Speculation> traced(previousSeeds.size());
+    parallelFor(previousSeeds.size(), 1, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            const Vec2 seed = previousSeeds[i].position;
+            traced[i].forward = tracer.run(seed, h, grid);
+            traced[i].hasBackward = !traced[i].forward.closed;
+            if (traced[i].hasBackward) traced[i].backward = tracer.run(seed, -h, grid);
+        }
+    });
+    for (std::size_t i = 0; i < previousSeeds.size(); ++i) tryLine(previousSeeds[i].position, previousSeeds[i].arrowPhase, &traced[i]);
+    traced.clear();
+
+    // Then the gaps, one seed at a time: the candidates beside the lines, oldest first, and the
+    // fallback seeds whenever there are none. (Traced ahead in parallel they would mostly be wasted:
+    // the candidates beside a line lie along one streamline, which the first of them takes.)
     std::size_t nextSeed = 0;
     while (true) {
         if (!candidates.empty()) {
             const Vec2 seed = candidates.front();
             candidates.pop_front();
-            tryLine(seed, std::nullopt);
+            tryLine(seed, std::nullopt, nullptr);
         } else if (nextSeed < seeds.size()) {
-            tryLine(seeds[nextSeed++], std::nullopt);
+            tryLine(seeds[nextSeed++], std::nullopt, nullptr);
         } else {
             break;
         }
